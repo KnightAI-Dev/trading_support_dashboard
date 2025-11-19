@@ -12,9 +12,20 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://trading_user:trading_pass
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 # Binance API
-BINANCE_API_URL = os.getenv("BINANCE_API_URL", "https://api.binance.com")
+BINANCE_API_URL = os.getenv("BINANCE_API_URL", "https://fapi.binance.com")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY", "")
+
+# Limit for Number of market data to ingest
+MARKET_DATA_LIMIT = int(os.getenv("MARKET_DATA_LIMIT", "200"))
+
+# Limit for Number of symbols to ingest
+SYMBOL_LIMIT = int(os.getenv("SYMBOL_LIMIT", "400"))
+
+# CoinGecko API
+COINGECKO_API_URL = os.getenv("COINGECKO_API_URL", "https://api.coingecko.com/api/v3")
+COINGECKO_MIN_MARKET_CAP = float(os.getenv("COINGECKO_MIN_MARKET_CAP", "50000000"))  # 50M USD
+COINGECKO_MIN_VOLUME_24H = float(os.getenv("COINGECKO_MIN_VOLUME_24H", "50000000"))  # 50M USD
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

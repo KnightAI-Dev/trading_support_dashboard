@@ -5,14 +5,54 @@
 CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- ============================================================================
+-- METADATA TABLES
+-- ============================================================================
+
+-- Timeframes metadata
+CREATE TABLE timeframe (
+    timeframe_id SERIAL PRIMARY KEY,
+    tf_name VARCHAR(10) UNIQUE NOT NULL,
+    seconds INTEGER NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_timeframe_name ON timeframe(tf_name);
+
+-- Insert standard timeframes
+INSERT INTO timeframe (tf_name, seconds) VALUES 
+    ('5m', 300),
+    ('30m', 1800),
+    ('1h', 3600),
+    ('2h', 7200),
+    ('4h', 14400),
+    ('6h', 21600),
+    ('8h', 28800),
+    ('12h', 43200),
+    ('1d', 86400)
+ON CONFLICT (tf_name) DO NOTHING;
+
+-- Symbols metadata
+CREATE TABLE symbols (
+    symbol_id SERIAL PRIMARY KEY,
+    symbol_name VARCHAR(20) UNIQUE NOT NULL,
+    base_asset VARCHAR(20) NOT NULL,
+    quote_asset VARCHAR(20) NOT NULL,
+    image_path VARCHAR(500),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_symbols_name ON symbols(symbol_name);
+
+-- ============================================================================
 -- MARKET DATA TABLES
 -- ============================================================================
 
--- OHLCV Candles (time-series)
+-- OHLCV Candles (time-series) - refactored with FKs
 CREATE TABLE ohlcv_candles (
     id BIGSERIAL,
-    symbol VARCHAR(20) NOT NULL,
-    timeframe VARCHAR(10) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
+    timeframe_id INTEGER NOT NULL REFERENCES timeframe(timeframe_id),
     timestamp TIMESTAMPTZ NOT NULL,
     open DECIMAL(20, 8) NOT NULL,
     high DECIMAL(20, 8) NOT NULL,
@@ -20,7 +60,7 @@ CREATE TABLE ohlcv_candles (
     close DECIMAL(20, 8) NOT NULL,
     volume DECIMAL(30, 8) NOT NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (symbol, timeframe, timestamp)
+    PRIMARY KEY (symbol_id, timeframe_id, timestamp)
 );
 
 -- Convert to hypertable for time-series optimization
@@ -29,34 +69,32 @@ SELECT create_hypertable('ohlcv_candles', 'timestamp',
     if_not_exists => TRUE);
 
 -- Create indexes
-CREATE INDEX idx_ohlcv_symbol_timeframe ON ohlcv_candles(symbol, timeframe, timestamp DESC);
-CREATE INDEX idx_ohlcv_symbol_timestamp ON ohlcv_candles(symbol, timestamp DESC);
+CREATE INDEX idx_ohlcv_symbol_timeframe ON ohlcv_candles(symbol_id, timeframe_id, timestamp DESC);
+CREATE INDEX idx_ohlcv_symbol_timestamp ON ohlcv_candles(symbol_id, timestamp DESC);
 
 -- Market Data (Open Interest, CVD, etc.)
 CREATE TABLE market_data (
     id BIGSERIAL,  -- Keep it, but NOT as primary key
-    symbol VARCHAR(20) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
     timestamp TIMESTAMPTZ NOT NULL,
-    open_interest DECIMAL(30, 8),
-    cvd DECIMAL(30, 8),
-    net_longs DECIMAL(30, 8),
-    net_shorts DECIMAL(30, 8),
     market_cap DECIMAL(30, 2),
     price DECIMAL(20, 8),
     circulating_supply DECIMAL(30, 2),
+    volume_24h DECIMAL(30, 2),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (symbol, timestamp)
+    PRIMARY KEY (symbol_id, timestamp)
 );
 
 SELECT create_hypertable('market_data', 'timestamp',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE);
 
-CREATE INDEX idx_market_data_symbol_timestamp ON market_data(symbol, timestamp DESC);
+CREATE INDEX idx_market_data_symbol_timestamp ON market_data(symbol_id, timestamp DESC);
 
--- Asset Information (static metadata)
+-- Asset Information (keeping for backward compatibility, can be deprecated later)
 CREATE TABLE asset_info (
     id SERIAL PRIMARY KEY,
+    symbol_id INTEGER UNIQUE NOT NULL REFERENCES symbols(symbol_id),
     symbol VARCHAR(20) UNIQUE NOT NULL,
     base_asset VARCHAR(20) NOT NULL,
     quote_asset VARCHAR(20) NOT NULL,
@@ -79,28 +117,28 @@ CREATE INDEX idx_asset_info_symbol ON asset_info(symbol);
 -- Swing Highs and Lows
 CREATE TABLE swing_points (
     id BIGSERIAL,  -- keep but not PK
-    symbol VARCHAR(20) NOT NULL,
-    timeframe VARCHAR(10) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
+    timeframe_id INTEGER NOT NULL REFERENCES timeframe(timeframe_id),
     timestamp TIMESTAMPTZ NOT NULL,
     price DECIMAL(20, 8) NOT NULL,
     type VARCHAR(10) NOT NULL CHECK (type IN ('swing_high', 'swing_low')),
     strength INTEGER DEFAULT 1,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (symbol, timeframe, timestamp, type)
+    PRIMARY KEY (symbol_id, timeframe_id, timestamp, type)
 );
 
 SELECT create_hypertable('swing_points', 'timestamp',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE);
 
-CREATE INDEX idx_swing_symbol_timeframe ON swing_points(symbol, timeframe, timestamp DESC);
+CREATE INDEX idx_swing_symbol_timeframe ON swing_points(symbol_id, timeframe_id, timestamp DESC);
 CREATE INDEX idx_swing_type ON swing_points(type);
 
 -- Support and Resistance Levels
 CREATE TABLE support_resistance (
     id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    timeframe VARCHAR(10) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
+    timeframe_id INTEGER NOT NULL REFERENCES timeframe(timeframe_id),
     level DECIMAL(20, 8) NOT NULL,
     type VARCHAR(10) NOT NULL CHECK (type IN ('support', 'resistance')),
     strength INTEGER DEFAULT 1, -- Number of touches
@@ -111,14 +149,14 @@ CREATE TABLE support_resistance (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_sr_symbol_timeframe ON support_resistance(symbol, timeframe, level);
-CREATE INDEX idx_sr_active ON support_resistance(is_active, symbol, timeframe);
+CREATE INDEX idx_sr_symbol_timeframe ON support_resistance(symbol_id, timeframe_id, level);
+CREATE INDEX idx_sr_active ON support_resistance(is_active, symbol_id, timeframe_id);
 
 -- Fibonacci Levels
 CREATE TABLE fibonacci_levels (
     id BIGSERIAL,
-    symbol VARCHAR(20) NOT NULL,
-    timeframe VARCHAR(10) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
+    timeframe_id INTEGER NOT NULL REFERENCES timeframe(timeframe_id),
     timestamp TIMESTAMPTZ NOT NULL,
     swing_high DECIMAL(20, 8) NOT NULL,
     swing_low DECIMAL(20, 8) NOT NULL,
@@ -134,14 +172,14 @@ CREATE TABLE fibonacci_levels (
     fib_1 DECIMAL(20, 8) NOT NULL,
     direction VARCHAR(10) NOT NULL CHECK (direction IN ('long', 'short')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (symbol, timeframe, timestamp)
+    PRIMARY KEY (symbol_id, timeframe_id, timestamp)
 );
 
 SELECT create_hypertable('fibonacci_levels', 'timestamp',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE);
 
-CREATE INDEX idx_fib_symbol_timeframe ON fibonacci_levels(symbol, timeframe, timestamp DESC);
+CREATE INDEX idx_fib_symbol_timeframe ON fibonacci_levels(symbol_id, timeframe_id, timestamp DESC);
 
 -- ============================================================================
 -- TRADING SIGNALS & OUTPUTS
@@ -150,7 +188,7 @@ CREATE INDEX idx_fib_symbol_timeframe ON fibonacci_levels(symbol, timeframe, tim
 -- Trading Signals (main output table)
 CREATE TABLE trading_signals (
     id BIGSERIAL,
-    symbol VARCHAR(20) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
     timestamp TIMESTAMPTZ NOT NULL,
     market_score INTEGER NOT NULL CHECK (market_score BETWEEN 0 AND 100),
     direction VARCHAR(10) NOT NULL CHECK (direction IN ('long', 'short')),
@@ -172,35 +210,35 @@ CREATE TABLE trading_signals (
     approaching_fib_level DECIMAL(20, 8),
     confidence_score DECIMAL(5, 2),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (symbol, timestamp)
+    PRIMARY KEY (symbol_id, timestamp)
 );
 
 SELECT create_hypertable('trading_signals', 'timestamp',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE);
 
-CREATE INDEX idx_signals_symbol_timestamp ON trading_signals(symbol, timestamp DESC);
+CREATE INDEX idx_signals_symbol_timestamp ON trading_signals(symbol_id, timestamp DESC);
 CREATE INDEX idx_signals_direction ON trading_signals(direction);
 CREATE INDEX idx_signals_score ON trading_signals(market_score DESC);
 
 -- Confluence Factors
 CREATE TABLE confluence_factors (
     id BIGSERIAL,
-    symbol VARCHAR(20) NOT NULL,
+    symbol_id INTEGER NOT NULL REFERENCES symbols(symbol_id),
     timestamp TIMESTAMPTZ NOT NULL,
     factor_type VARCHAR(20) NOT NULL,
     factor_value DECIMAL(20, 8),
     factor_score INTEGER DEFAULT 0 CHECK (factor_score BETWEEN 0 AND 100),
-    metadata JSONB,
+    metadata_json TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    PRIMARY KEY (symbol, timestamp, factor_type)
+    PRIMARY KEY (symbol_id, timestamp, factor_type)
 );
 
 SELECT create_hypertable('confluence_factors', 'timestamp',
     chunk_time_interval => INTERVAL '1 day',
     if_not_exists => TRUE);
 
-CREATE INDEX idx_confluence_symbol_timestamp ON confluence_factors(symbol, timestamp DESC);
+CREATE INDEX idx_confluence_symbol_timestamp ON confluence_factors(symbol_id, timestamp DESC);
 CREATE INDEX idx_confluence_type ON confluence_factors(factor_type);
 
 -- ============================================================================

@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   postgres:
-    image: timescale/timescaledb:latest-pg15
+    image: timescale/timescaledb:latest-pg17
     container_name: trading_postgres
     environment:
       POSTGRES_USER: trading_user
@@ -14,7 +14,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trading_user"]
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -40,7 +40,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://trading_user:trading_pass@postgres:5432/trading_db
       - REDIS_URL=redis://redis:6379/0
-      - BINANCE_API_URL=https://api.binance.com
+      - BINANCE_API_URL=https://fapi.binance.com
       - LOG_LEVEL=INFO
     depends_on:
       postgres:

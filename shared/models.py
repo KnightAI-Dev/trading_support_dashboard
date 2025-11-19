@@ -30,15 +30,12 @@ class MarketData(Base):
     __tablename__ = "market_data"
     
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String(20), nullable=False, index=True)
+    symbol_id = Column(Integer, nullable=False, index=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
-    open_interest = Column(Numeric(30, 8), nullable=True)
-    cvd = Column(Numeric(30, 8), nullable=True)
-    net_longs = Column(Numeric(30, 8), nullable=True)
-    net_shorts = Column(Numeric(30, 8), nullable=True)
     market_cap = Column(Numeric(30, 2), nullable=True)
     price = Column(Numeric(20, 8), nullable=True)
     circulating_supply = Column(Numeric(30, 2), nullable=True)
+    volume_24h = Column(Numeric(30, 2), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
