@@ -4,11 +4,16 @@ Ingestion Service - Fetches market data from Binance
 import asyncio
 import sys
 import os
-from datetime import datetime
+import json
+import time
+from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple, Set
 import aiohttp
+import websockets
+from websockets.exceptions import ConnectionClosed, WebSocketException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from decimal import Decimal
 
 # Add shared to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
@@ -18,7 +23,8 @@ from shared.models import OHLCVCandle
 from shared.logger import setup_logger
 from shared.config import (
     BINANCE_API_URL, COINGECKO_API_URL, COINGECKO_MIN_MARKET_CAP, COINGECKO_MIN_VOLUME_24H, MARKET_DATA_LIMIT, SYMBOL_LIMIT,
-    DEFAULT_SYMBOLS, DEFAULT_TIMEFRAME
+    DEFAULT_SYMBOLS, DEFAULT_TIMEFRAME, WS_BATCH_SIZE, WS_BATCH_TIMEOUT, WS_MAX_RECONNECT_DELAY,
+    WS_PING_INTERVAL, WS_PING_TIMEOUT, DB_BATCH_SIZE
 )
 from shared.redis_client import publish_event, cache_get, cache_set
 
@@ -654,6 +660,602 @@ def get_timeframe_id(db: Session, timeframe: str) -> Optional[int]:
         return None
 
 
+class BinanceWebSocketService:
+    """WebSocket service for real-time OHLCV data from Binance Futures"""
+    
+    def __init__(self):
+        self.ws_url = "wss://fstream.binance.com/ws"
+        self.ws_stream_url = "wss://fstream.binance.com/stream"  # For multi-stream
+        self.websocket = None
+        self.reconnect_delay = 1  # Start with 1 second
+        self.max_reconnect_delay = WS_MAX_RECONNECT_DELAY
+        self.is_connected = False
+        self.messages_received = 0
+        self.parse_errors = 0
+        self.reconnect_count = 0
+        self.last_message_time = None
+        self.batch_buffer = []  # Buffer for batch inserts
+        self.last_batch_flush = time.time()  # Initialize to current time
+        self.batch_size = WS_BATCH_SIZE
+        self.batch_timeout = WS_BATCH_TIMEOUT
+        self.total_batches_flushed = 0
+        self.total_candles_batched = 0
+        
+    async def __aenter__(self):
+        return self
+    
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+    
+    async def close(self):
+        """Close WebSocket connection"""
+        if self.websocket:
+            await self.websocket.close()
+            self.is_connected = False
+            logger.info("WebSocket connection closed")
+    
+    def map_timeframe_to_binance_interval(self, timeframe: str) -> str:
+        """Map our timeframe format to Binance interval format
+        
+        Binance supports: 1m, 3m, 5m, 15m, 30m, 1h, 2h, 4h, 6h, 8h, 12h, 1d, 3d, 1w, 1M
+        Returns the mapped interval or the original if not found (will fail at connection time)
+        """
+        # Normalize input (lowercase except for month)
+        normalized = timeframe.lower() if timeframe != "1M" else "1M"
+        
+        timeframe_map = {
+            "1m": "1m",
+            "3m": "3m",
+            "5m": "5m",
+            "15m": "15m",
+            "30m": "30m",
+            "1h": "1h",
+            "2h": "2h",
+            "4h": "4h",
+            "6h": "6h",
+            "8h": "8h",
+            "12h": "12h",
+            "1d": "1d",
+            "3d": "3d",
+            "1w": "1w",
+            "1M": "1M"  # Month (uppercase)
+        }
+        
+        mapped = timeframe_map.get(normalized, timeframe)
+        if mapped != timeframe:
+            logger.debug(f"Mapped timeframe {timeframe} -> {mapped}")
+        return mapped
+    
+    def build_stream_name(self, symbol: str, interval: str) -> str:
+        """Build stream name for kline: symbol@kline_interval"""
+        # Map timeframe to Binance interval format
+        binance_interval = self.map_timeframe_to_binance_interval(interval)
+        return f"{symbol.lower()}@kline_{binance_interval}"
+    
+    def build_multi_stream_url(self, symbols: List[str], timeframes: List[str]) -> str:
+        """Build multi-stream URL for multiple symbols and timeframes"""
+        streams = []
+        for symbol in symbols:
+            for timeframe in timeframes:
+                stream_name = self.build_stream_name(symbol, timeframe)
+                streams.append(stream_name)
+        
+        # Binance supports up to 200 streams per connection
+        if len(streams) > 200:
+            logger.warning(f"Too many streams ({len(streams)}), limiting to 200")
+            streams = streams[:200]
+        
+        # Multi-stream format: ?streams=stream1/stream2/stream3
+        streams_str = "/".join(streams)
+        return f"{self.ws_stream_url}?streams={streams_str}"
+    
+    def parse_kline_message(self, message: Dict) -> Optional[Dict]:
+        """Parse kline WebSocket message into canonical OHLCV format
+        
+        Handles both single-stream and multi-stream formats:
+        - Single: {"e":"kline","E":...,"s":"BTCUSDT","k":{...}}
+        - Multi: {"stream":"btcusdt@kline_1m","data":{"e":"kline",...}}
+        """
+        try:
+            # Handle multi-stream format
+            if "stream" in message and "data" in message:
+                data = message["data"]
+            # Handle single-stream format
+            elif "e" in message and message.get("e") == "kline":
+                data = message
+            else:
+                return None
+            
+            if data.get("e") != "kline":
+                return None
+            
+            k = data.get("k", {})
+            if not k:
+                return None
+            
+            # Extract OHLCV data
+            symbol = k.get("s")  # Symbol
+            interval = k.get("i")  # Interval
+            is_closed = k.get("x", False)  # True if candle is closed
+            
+            # Timestamps (ms since epoch)
+            open_ts = k.get("t")  # Open time
+            close_ts = k.get("T")  # Close time
+            
+            # Validate timestamps
+            if not open_ts:
+                logger.warning("Missing open timestamp in kline data")
+                return None
+            
+            # Create timezone-aware timestamp (UTC)
+            timestamp = datetime.fromtimestamp(open_ts / 1000, tz=timezone.utc)
+            
+            # OHLCV values - validate and convert
+            open_price = float(k.get("o", 0))
+            high_price = float(k.get("h", 0))
+            low_price = float(k.get("l", 0))
+            close_price = float(k.get("c", 0))
+            volume = float(k.get("v", 0))
+            
+            # Validate OHLCV data
+            if not all([open_price > 0, high_price > 0, low_price > 0, close_price > 0]):
+                logger.warning(f"Invalid OHLCV prices for {symbol}: o={open_price}, h={high_price}, l={low_price}, c={close_price}")
+                return None
+            
+            if high_price < low_price:
+                logger.warning(f"Invalid high/low for {symbol}: high={high_price} < low={low_price}")
+                return None
+            
+            return {
+                "symbol": symbol,
+                "timeframe": interval,
+                "open_ts": open_ts,
+                "close_ts": close_ts,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "volume": volume,
+                "is_closed": is_closed,
+                "timestamp": timestamp
+            }
+        except Exception as e:
+            self.parse_errors += 1
+            logger.error(f"Error parsing kline message: {e}")
+            return None
+    
+    async def flush_batch(self, db: Session) -> Tuple[int, int]:
+        """Flush batched candles to database
+        
+        Returns:
+            Tuple[int, int]: (saved_count, failed_count)
+        """
+        if not self.batch_buffer:
+            return 0, 0
+        
+        saved_count = 0
+        failed_count = 0
+        batch = self.batch_buffer.copy()
+        self.batch_buffer.clear()
+        
+        try:
+            # Group by closed vs in-progress for different SQL statements
+            closed_candles = [c for c in batch if c.get("is_closed", False)]
+            in_progress_candles = [c for c in batch if not c.get("is_closed", False)]
+            
+            # Process closed candles
+            if closed_candles:
+                saved, failed = await self._batch_insert_candles(db, closed_candles, is_closed=True)
+                saved_count += saved
+                failed_count += failed
+            
+            # Process in-progress candles
+            if in_progress_candles:
+                saved, failed = await self._batch_insert_candles(db, in_progress_candles, is_closed=False)
+                saved_count += saved
+                failed_count += failed
+            
+            if saved_count > 0:
+                db.commit()
+                self.total_batches_flushed += 1
+                self.total_candles_batched += saved_count
+                logger.debug(f"Flushed batch: {saved_count} saved, {failed_count} failed (total batches: {self.total_batches_flushed})")
+            
+            return saved_count, failed_count
+        except Exception as e:
+            logger.error(f"Error flushing batch: {e}", exc_info=True)
+            db.rollback()
+            return 0, len(batch)
+    
+    async def _batch_insert_candles(self, db: Session, candles: List[Dict], is_closed: bool) -> Tuple[int, int]:
+        """Insert a batch of candles with the same closed status"""
+        if not candles:
+            return 0, 0
+        
+        saved_count = 0
+        failed_count = 0
+        
+        # Build parameter lists for bulk insert
+        params_list = []
+        symbol_timeframe_map = {}  # Cache symbol_id and timeframe_id lookups
+        
+        for kline_data in candles:
+            try:
+                symbol = kline_data.get("symbol")
+                timeframe = kline_data.get("timeframe")
+                timestamp = kline_data.get("timestamp")
+                
+                if not all([symbol, timeframe, timestamp]):
+                    failed_count += 1
+                    continue
+                
+                # Get or cache symbol_id and timeframe_id
+                cache_key = (symbol, timeframe)
+                if cache_key not in symbol_timeframe_map:
+                    symbol_id = get_or_create_symbol_record(db, symbol)
+                    timeframe_id = get_timeframe_id(db, timeframe)
+                    if not symbol_id or not timeframe_id:
+                        failed_count += 1
+                        continue
+                    symbol_timeframe_map[cache_key] = (symbol_id, timeframe_id)
+                else:
+                    symbol_id, timeframe_id = symbol_timeframe_map[cache_key]
+                
+                params_list.append({
+                    "symbol_id": symbol_id,
+                    "timeframe_id": timeframe_id,
+                    "timestamp": timestamp,
+                    "open": Decimal(str(kline_data["open"])),
+                    "high": Decimal(str(kline_data["high"])),
+                    "low": Decimal(str(kline_data["low"])),
+                    "close": Decimal(str(kline_data["close"])),
+                    "volume": Decimal(str(kline_data["volume"]))
+                })
+            except Exception as e:
+                logger.error(f"Error preparing batch insert for candle: {e}")
+                failed_count += 1
+        
+        if not params_list:
+            return 0, failed_count
+        
+        # Build appropriate SQL statement
+        if is_closed:
+            stmt = text("""
+                INSERT INTO ohlcv_candles 
+                (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
+                VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
+                ON CONFLICT (symbol_id, timeframe_id, timestamp) 
+                DO UPDATE SET
+                    open = EXCLUDED.open,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low,
+                    close = EXCLUDED.close,
+                    volume = EXCLUDED.volume
+            """)
+        else:
+            stmt = text("""
+                INSERT INTO ohlcv_candles 
+                (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
+                VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
+                ON CONFLICT (symbol_id, timeframe_id, timestamp) 
+                DO UPDATE SET
+                    high = GREATEST(ohlcv_candles.high, EXCLUDED.high),
+                    low = LEAST(ohlcv_candles.low, EXCLUDED.low),
+                    close = EXCLUDED.close,
+                    volume = EXCLUDED.volume
+            """)
+        
+        try:
+            # Execute batch insert
+            db.execute(stmt, params_list)
+            db.flush()
+            saved_count = len(params_list)
+            
+            # Publish events for closed candles
+            for kline_data in candles:
+                if kline_data.get("is_closed", False):
+                    try:
+                        publish_event("candle_update", {
+                            "symbol": kline_data.get("symbol"),
+                            "timeframe": kline_data.get("timeframe"),
+                            "timestamp": kline_data.get("timestamp").isoformat(),
+                            "closed": True
+                        })
+                    except Exception as e:
+                        logger.debug(f"Failed to publish event: {e}")
+        except Exception as e:
+            logger.error(f"Error in batch insert: {e}", exc_info=True)
+            failed_count += len(params_list)
+            saved_count = 0
+        
+        return saved_count, failed_count
+    
+    async def save_candle_from_websocket(self, db: Session, kline_data: Dict) -> bool:
+        """Add candle to batch buffer for later batch insert
+        
+        Returns:
+            bool: True if added to batch, False if validation failed
+        """
+        symbol = kline_data.get("symbol")
+        timeframe = kline_data.get("timeframe")
+        timestamp = kline_data.get("timestamp")
+        
+        # Validate required fields
+        if not all([symbol, timeframe, timestamp]):
+            logger.error(f"Missing required fields in kline_data: symbol={symbol}, timeframe={timeframe}, timestamp={timestamp}")
+            return False
+        
+        # Validate timestamp is timezone-aware
+        if timestamp.tzinfo is None:
+            logger.error(f"Timestamp is not timezone-aware for {symbol} {timeframe}")
+            return False
+        
+        # Add to batch buffer
+        self.batch_buffer.append(kline_data)
+        return True
+    
+    async def connect_and_subscribe(self, symbols: List[str], timeframes: List[str]):
+        """Connect to WebSocket and subscribe to kline streams with improved error handling"""
+        if not symbols or not timeframes:
+            logger.error("Cannot connect: empty symbols or timeframes list")
+            return False
+        
+        # Validate timeframes are supported by Binance
+        for tf in timeframes:
+            mapped = self.map_timeframe_to_binance_interval(tf)
+            valid_intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"]
+            if mapped not in valid_intervals:
+                logger.warning(f"Timeframe {tf} (mapped to {mapped}) may not be supported by Binance")
+        
+        # Use multi-stream URL if we have multiple streams
+        if len(symbols) * len(timeframes) > 1:
+            url = self.build_multi_stream_url(symbols, timeframes)
+            total_streams = len(symbols) * len(timeframes)
+            logger.info(
+                f"Connecting to multi-stream WebSocket: {len(symbols)} symbols x {len(timeframes)} timeframes = {total_streams} streams"
+            )
+        else:
+            # Single stream
+            symbol = symbols[0] if symbols else ""
+            timeframe = timeframes[0] if timeframes else ""
+            stream_name = self.build_stream_name(symbol, timeframe)
+            url = f"{self.ws_url}/{stream_name}"
+            logger.info(f"Connecting to single-stream WebSocket: {stream_name}")
+        
+        try:
+            # Connect with timeout
+            self.websocket = await asyncio.wait_for(
+                websockets.connect(
+                    url, 
+                    ping_interval=WS_PING_INTERVAL, 
+                    ping_timeout=WS_PING_TIMEOUT
+                ),
+                timeout=10.0
+            )
+            self.is_connected = True
+            self.reconnect_delay = 1  # Reset delay on successful connection
+            logger.info(f"WebSocket connected successfully: {url[:100]}...")
+            return True
+        except asyncio.TimeoutError:
+            logger.error(f"WebSocket connection timeout after 10s: {url[:100]}...")
+            self.is_connected = False
+            return False
+        except Exception as e:
+            logger.error(f"Failed to connect WebSocket: {e}, URL: {url[:100]}...")
+            self.is_connected = False
+            return False
+    
+    async def listen_and_process(self, symbols: List[str], timeframes: List[str]):
+        """Listen to WebSocket messages and process kline data with improved error handling"""
+        db = None
+        candles_saved = 0
+        candles_failed = 0
+        
+        # Test database connection on startup
+        try:
+            test_db = SessionLocal()
+            test_db.execute(text("SELECT 1"))
+            test_db.close()
+            logger.info("Database connection test successful")
+        except Exception as e:
+            logger.error(f"Database connection test failed: {e}", exc_info=True)
+        
+        try:
+            while True:
+                try:
+                    if not self.is_connected or not self.websocket:
+                        # Reconnect with exponential backoff
+                        await asyncio.sleep(self.reconnect_delay)
+                        self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+                        success = await self.connect_and_subscribe(symbols, timeframes)
+                        if not success:
+                            continue
+                        # Recreate database session after reconnection
+                        if db:
+                            try:
+                                db.close()
+                            except:
+                                pass
+                        db = SessionLocal()
+                        # Test the new session
+                        try:
+                            db.execute(text("SELECT 1"))
+                            logger.info("Database session recreated and tested after reconnection")
+                        except Exception as e:
+                            logger.error(f"Database session test failed after reconnection: {e}")
+                            db.close()
+                            db = None
+                    
+                    # Create database session if needed
+                    if db is None:
+                        db = SessionLocal()
+                        # Test the session
+                        try:
+                            db.execute(text("SELECT 1"))
+                        except Exception as e:
+                            logger.error(f"Database session test failed: {e}")
+                            db.close()
+                            db = None
+                            await asyncio.sleep(1)
+                            continue
+                    
+                    # Receive message
+                    message_str = await asyncio.wait_for(self.websocket.recv(), timeout=30.0)
+                    self.messages_received += 1
+                    self.last_message_time = time.time()
+                    
+                    # Log metrics periodically (every 1000 messages)
+                    if self.messages_received % 1000 == 0:
+                        metrics = self.get_metrics()
+                        logger.info(
+                            f"WebSocket metrics: {metrics['messages_received']} messages received, "
+                            f"{metrics['parse_errors']} parse errors, "
+                            f"{metrics['reconnect_count']} reconnects, "
+                            f"{candles_saved} candles saved, {candles_failed} failed, "
+                            f"batch_buffer={metrics['batch_buffer_size']}/{metrics['batch_size']}, "
+                            f"batches_flushed={self.total_batches_flushed}, "
+                            f"connected: {metrics['is_connected']}"
+                        )
+                    
+                    # Parse message
+                    try:
+                        message = json.loads(message_str)
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse JSON message: {e}, message: {message_str[:200]}")
+                        continue
+                    
+                    kline_data = self.parse_kline_message(message)
+                    
+                    if kline_data:
+                        try:
+                            # Add to batch buffer
+                            success = await self.save_candle_from_websocket(db, kline_data)
+                            
+                            # Check if we should flush the batch
+                            should_flush = (
+                                len(self.batch_buffer) >= self.batch_size or
+                                (time.time() - self.last_batch_flush) >= self.batch_timeout
+                            )
+                            
+                            if should_flush and self.batch_buffer:
+                                batch_saved, batch_failed = await self.flush_batch(db)
+                                candles_saved += batch_saved
+                                candles_failed += batch_failed
+                                self.last_batch_flush = time.time()
+                            
+                            if not success:
+                                candles_failed += 1
+                                logger.warning(
+                                    f"Failed to add candle to batch: "
+                                    f"{kline_data.get('symbol', 'unknown')} {kline_data.get('timeframe', 'unknown')}"
+                                )
+                        except Exception as save_error:
+                            candles_failed += 1
+                            logger.error(f"Failed to process candle (exception): {save_error}", exc_info=True)
+                            # Recreate database session on error
+                            if db:
+                                try:
+                                    db.rollback()
+                                except:
+                                    pass
+                                try:
+                                    db.close()
+                                except:
+                                    pass
+                            db = SessionLocal()
+                            # Clear batch buffer on error
+                            self.batch_buffer.clear()
+                    
+                except asyncio.TimeoutError:
+                    # Send ping to keep connection alive
+                    if self.websocket:
+                        try:
+                            await self.websocket.ping()
+                        except Exception as ping_error:
+                            logger.debug(f"Ping failed: {ping_error}")
+                except (ConnectionClosed, WebSocketException) as e:
+                    logger.warning(
+                        f"WebSocket connection closed: {e}. "
+                        f"Reconnect attempt {self.reconnect_count + 1}, "
+                        f"delay: {self.reconnect_delay}s"
+                    )
+                    self.is_connected = False
+                    self.reconnect_count += 1
+                    if self.websocket:
+                        try:
+                            await self.websocket.close()
+                        except:
+                            pass
+                    self.websocket = None
+                    # Close database session on connection loss
+                    if db:
+                        try:
+                            # Try to flush any pending batch before closing
+                            if self.batch_buffer:
+                                try:
+                                    await self.flush_batch(db)
+                                except:
+                                    pass
+                            db.close()
+                        except:
+                            pass
+                    db = None
+                    # Clear batch buffer on connection loss
+                    self.batch_buffer.clear()
+                except Exception as e:
+                    logger.error(f"Error processing WebSocket message: {e}", exc_info=True)
+                    await asyncio.sleep(1)
+        finally:
+            # Flush any remaining batch items
+            if db and self.batch_buffer:
+                try:
+                    batch_saved, batch_failed = await self.flush_batch(db)
+                    candles_saved += batch_saved
+                    candles_failed += batch_failed
+                    logger.info(f"Flushed final batch: {batch_saved} saved, {batch_failed} failed")
+                except Exception as e:
+                    logger.error(f"Error flushing final batch: {e}")
+            
+            if db:
+                try:
+                    db.close()
+                except:
+                    pass
+            logger.info(f"WebSocket listener stopped. Total: {candles_saved} saved, {candles_failed} failed")
+    
+    async def start(self, symbols: List[str], timeframes: List[str]):
+        """Start WebSocket service with reconnection logic"""
+        logger.info(f"Starting WebSocket service for {len(symbols)} symbols, {len(timeframes)} timeframes")
+        
+        while True:
+            try:
+                if await self.connect_and_subscribe(symbols, timeframes):
+                    await self.listen_and_process(symbols, timeframes)
+            except KeyboardInterrupt:
+                logger.info("WebSocket service stopped by user")
+                break
+            except Exception as e:
+                logger.error(f"WebSocket service error: {e}", exc_info=True)
+                await asyncio.sleep(self.reconnect_delay)
+                self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
+    
+    def get_metrics(self) -> Dict:
+        """Get WebSocket connection metrics"""
+        return {
+            "is_connected": self.is_connected,
+            "messages_received": self.messages_received,
+            "parse_errors": self.parse_errors,
+            "reconnect_count": self.reconnect_count,
+            "last_message_time": self.last_message_time,
+            "reconnect_delay": self.reconnect_delay,
+            "batch_buffer_size": len(self.batch_buffer),
+            "batch_size": self.batch_size,
+            "time_since_last_flush": time.time() - self.last_batch_flush if self.last_batch_flush else 0,
+            "total_batches_flushed": self.total_batches_flushed,
+            "total_candles_batched": self.total_candles_batched
+        }
+
+
 async def hourly_market_data_update():
     """Background task to update market data every hour with metrics"""
     logger.info("Hourly market data update task started")
@@ -733,47 +1335,36 @@ async def main():
             db.close()
         
         logger.info(
-            f"Starting Binance ingestion for {len(symbols)} symbols "
+            f"Starting Binance WebSocket ingestion for {len(symbols)} symbols "
             f"across {len(timeframes)} timeframes: {timeframes}"
         )
         
-        # Continue with Binance ingestion
-        cycle_count = 0
-        async with BinanceIngestionService() as service:
-            while True:
+        # Start WebSocket service for real-time OHLCV data
+        # This replaces the REST polling loop
+        async with BinanceWebSocketService() as ws_service:
+            # Start periodic metrics logging task
+            async def log_metrics_periodically():
+                while True:
+                    await asyncio.sleep(300)  # Log every 5 minutes
+                    metrics = ws_service.get_metrics()
+                    messages_per_sec = metrics['messages_received'] / 300 if metrics['messages_received'] > 0 else 0
+                    logger.info(
+                        f"WebSocket metrics: {metrics['messages_received']} messages received "
+                        f"({messages_per_sec:.2f} msg/sec), {metrics['parse_errors']} parse errors, "
+                        f"{metrics['reconnect_count']} reconnects, connected: {metrics['is_connected']}"
+                    )
+            
+            metrics_task = asyncio.create_task(log_metrics_periodically())
+            
+            try:
+                # Start WebSocket service (runs indefinitely with reconnection)
+                await ws_service.start(symbols, timeframes)
+            finally:
+                metrics_task.cancel()
                 try:
-                    # Refresh symbols list every 10 cycles (~10 minutes)
-                    # This ensures we pick up newly qualified symbols
-                    if cycle_count % 10 == 0:
-                        db = SessionLocal()
-                        try:
-                            new_symbols = get_qualified_symbols(db)
-                            if new_symbols:
-                                symbols = new_symbols
-                                logger.info(f"Refreshed symbols list: {len(symbols)} qualified symbols")
-                            new_timeframes = get_ingestion_timeframes(db)
-                            if new_timeframes:
-                                timeframes = new_timeframes
-                                logger.info(f"Refreshed timeframe list: {timeframes}")
-                        finally:
-                            db.close()
-                    
-                    # Ingest all timeframes in parallel
-                    timeframe_tasks = [
-                        service.ingest_all_symbols(symbols, timeframe) 
-                        for timeframe in timeframes
-                    ]
-                    await asyncio.gather(*timeframe_tasks, return_exceptions=True)
-                    logger.info(f"Ingestion cycle completed for all {len(timeframes)} timeframes")
-                    
-                    cycle_count += 1
-                    await asyncio.sleep(60)  # Wait 1 minute before next cycle
-                except KeyboardInterrupt:
-                    logger.info("Ingestion service stopped")
-                    break
-                except Exception as e:
-                    logger.error(f"Error in ingestion loop: {e}")
-                    await asyncio.sleep(60)
+                    await metrics_task
+                except asyncio.CancelledError:
+                    pass
     finally:
         # Cancel the hourly update task
         update_task.cancel()

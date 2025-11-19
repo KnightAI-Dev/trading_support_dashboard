@@ -70,3 +70,14 @@ SUPPORTED_TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", 
 # Symbols
 DEFAULT_SYMBOLS = os.getenv("DEFAULT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT").split(",")
 
+# WebSocket Configuration
+WS_BATCH_SIZE = int(os.getenv("WS_BATCH_SIZE", "50"))  # Batch size for database inserts
+WS_BATCH_TIMEOUT = float(os.getenv("WS_BATCH_TIMEOUT", "1.0"))  # Seconds to wait before flushing batch
+WS_MAX_RECONNECT_DELAY = int(os.getenv("WS_MAX_RECONNECT_DELAY", "60"))  # Max reconnect delay in seconds
+WS_PING_INTERVAL = int(os.getenv("WS_PING_INTERVAL", "20"))  # WebSocket ping interval
+WS_PING_TIMEOUT = int(os.getenv("WS_PING_TIMEOUT", "10"))  # WebSocket ping timeout
+
+# Database Configuration
+DB_BATCH_SIZE = int(os.getenv("DB_BATCH_SIZE", "100"))  # Batch size for bulk database operations
+DB_CONNECTION_TIMEOUT = int(os.getenv("DB_CONNECTION_TIMEOUT", "10"))  # Database connection timeout
+
