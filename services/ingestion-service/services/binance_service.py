@@ -113,16 +113,26 @@ class BinanceIngestionService:
         """Fetch OHLCV klines from Binance with circuit breaker protection
         
         Args:
-            symbol: Trading symbol
+            symbol: Trading symbol (will be cleaned to remove any @ prefix)
             interval: Timeframe interval
             limit: Maximum number of candles (max 1000)
             start_time: Optional start time for historical data
             end_time: Optional end time for historical data
         """
+        # Clean symbol: remove @ prefix if present (from WebSocket stream names)
+        cleaned_symbol = symbol.lstrip("@").upper()
+        
+        if cleaned_symbol != symbol:
+            logger.warning(
+                "symbol_cleaned",
+                original=symbol,
+                cleaned=cleaned_symbol
+            )
+        
         try:
             return await self.circuit_breaker.call(
                 self._fetch_klines_impl,
-                symbol,
+                cleaned_symbol,
                 interval,
                 limit,
                 start_time,

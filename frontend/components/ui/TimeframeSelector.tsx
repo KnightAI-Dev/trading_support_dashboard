@@ -10,18 +10,31 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h"];
-
 export function TimeframeSelector() {
-  const { selectedTimeframe, setSelectedTimeframe } = useMarketStore();
+  const {
+    selectedTimeframe,
+    selectedSymbol,
+    setSelectedTimeframe,
+    symbolTimeframes,
+    availableTimeframes,
+  } = useMarketStore();
+
+  const timeframes =
+    symbolTimeframes[selectedSymbol] && symbolTimeframes[selectedSymbol].length
+      ? symbolTimeframes[selectedSymbol]
+      : availableTimeframes;
 
   return (
-    <Select value={selectedTimeframe} onValueChange={(value) => setSelectedTimeframe(value as Timeframe)}>
+    <Select
+      value={selectedTimeframe}
+      onValueChange={(value) => setSelectedTimeframe(value as Timeframe)}
+      disabled={!timeframes.length}
+    >
       <SelectTrigger className="w-[100px]">
         <SelectValue placeholder="Timeframe" />
       </SelectTrigger>
       <SelectContent>
-        {TIMEFRAMES.map((tf) => (
+        {timeframes.map((tf) => (
           <SelectItem key={tf} value={tf}>
             {tf}
           </SelectItem>

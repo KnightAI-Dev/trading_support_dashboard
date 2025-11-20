@@ -1,10 +1,19 @@
 import { create } from "zustand";
-import { Candle, SwingPoint, SRLevel, TradingSignal } from "@/lib/api";
-import { Timeframe, Symbol, ChartSettings } from "@/lib/types";
+import { Candle, SwingPoint, SRLevel, TradingSignal, MarketMetadata } from "@/lib/api";
+import {
+  Timeframe,
+  Symbol,
+  ChartSettings,
+  DEFAULT_SYMBOLS,
+  DEFAULT_TIMEFRAMES,
+} from "@/lib/types";
 
 interface MarketState {
   selectedSymbol: Symbol;
   selectedTimeframe: Timeframe;
+  availableSymbols: Symbol[];
+  availableTimeframes: Timeframe[];
+  symbolTimeframes: Record<string, Timeframe[]>;
   candles: Candle[];
   swingPoints: SwingPoint[];
   srLevels: SRLevel[];
@@ -29,6 +38,7 @@ interface MarketState {
   updateChartSettings: (settings: Partial<ChartSettings>) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
+  setMarketMetadata: (metadata: MarketMetadata) => void;
   reset: () => void;
 }
 
@@ -43,6 +53,12 @@ const defaultChartSettings: ChartSettings = {
 export const useMarketStore = create<MarketState>((set) => ({
   selectedSymbol: "BTCUSDT",
   selectedTimeframe: "1h",
+  availableSymbols: DEFAULT_SYMBOLS,
+  availableTimeframes: DEFAULT_TIMEFRAMES,
+  symbolTimeframes: DEFAULT_SYMBOLS.reduce<Record<string, Timeframe[]>>((acc, symbol) => {
+    acc[symbol] = [...DEFAULT_TIMEFRAMES];
+    return acc;
+  }, {}),
   candles: [],
   swingPoints: [],
   srLevels: [],
@@ -81,14 +97,14 @@ export const useMarketStore = create<MarketState>((set) => ({
       }
       return state;
     }),
-  setSwingPoints: (swings) => set({ swingPoints: swings }),
+  setSwingPoints: (swings) => set({ swingPoints: Array.isArray(swings) ? swings : [] }),
   addSwingPoint: (swing) =>
     set((state) => ({
       swingPoints: [...state.swingPoints, swing].filter(
         (s) => s.symbol === swing.symbol && s.timeframe === swing.timeframe
       ),
     })),
-  setSRLevels: (levels) => set({ srLevels: levels }),
+  setSRLevels: (levels) => set({ srLevels: Array.isArray(levels) ? levels : [] }),
   setSignals: (signals) => set({ signals }),
   addSignal: (signal) =>
     set((state) => ({
@@ -102,6 +118,32 @@ export const useMarketStore = create<MarketState>((set) => ({
     })),
   setLoading: (loading) => set({ isLoading: loading }),
   setError: (error) => set({ error }),
+  setMarketMetadata: (metadata) =>
+    set((state) => {
+      const nextSymbolTimeframes =
+        metadata.symbolTimeframes &&
+        Object.keys(metadata.symbolTimeframes).length > 0
+          ? Object.entries(metadata.symbolTimeframes).reduce<Record<string, Timeframe[]>>(
+              (acc, [symbol, timeframes]) => {
+                acc[symbol] = [...timeframes];
+                return acc;
+              },
+              {}
+            )
+          : state.symbolTimeframes;
+
+      return {
+        availableSymbols:
+          metadata.symbols && metadata.symbols.length
+            ? metadata.symbols
+            : state.availableSymbols,
+        availableTimeframes:
+          metadata.timeframes && metadata.timeframes.length
+            ? metadata.timeframes
+            : state.availableTimeframes,
+        symbolTimeframes: nextSymbolTimeframes,
+      };
+    }),
   reset: () =>
     set({
       candles: [],

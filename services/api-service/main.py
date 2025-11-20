@@ -3,7 +3,7 @@ API Service - FastAPI REST API for Trading Support Architecture
 """
 import sys
 import os
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,11 +16,21 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 from shared.database import get_db, init_db
 from shared.models import TradingSignal, OHLCVCandle
 from shared.logger import setup_logger
-
-sys.path.append(os.path.join(os.path.dirname(__file__), '../storage-service'))
-from main import StorageService
+from shared.storage import StorageService
 
 logger = setup_logger(__name__)
+
+DEFAULT_SYMBOLS = [
+    symbol.strip()
+    for symbol in os.getenv("DEFAULT_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT").split(",")
+    if symbol.strip()
+]
+
+DEFAULT_TIMEFRAMES = [
+    tf.strip()
+    for tf in os.getenv("DEFAULT_TIMEFRAMES", "1m,5m,15m,1h,4h").split(",")
+    if tf.strip()
+]
 
 app = FastAPI(
     title="Trading Support API",
@@ -82,6 +92,20 @@ class SignalSummary(BaseModel):
     confluence: Optional[str]
 
 
+class MarketMetadataResponse(BaseModel):
+    symbols: List[str]
+    timeframes: List[str]
+    symbol_timeframes: Dict[str, List[str]]
+
+
+def _default_market_metadata() -> Dict[str, List[str]]:
+    return {
+        "symbols": DEFAULT_SYMBOLS,
+        "timeframes": DEFAULT_TIMEFRAMES,
+        "symbol_timeframes": {symbol: DEFAULT_TIMEFRAMES for symbol in DEFAULT_SYMBOLS},
+    }
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize on startup"""
@@ -101,6 +125,25 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy"}
+
+
+@app.get("/metadata/market", response_model=MarketMetadataResponse)
+async def get_market_metadata(db: Session = Depends(get_db)):
+    """Get available symbols and timeframes from database"""
+    try:
+        with StorageService() as storage:
+            # This queries the database directly from ohlcv_candles table
+            metadata = storage.get_market_metadata()
+            # StorageService already handles empty database case with defaults
+            # but we ensure we always return valid data
+            if not metadata or not metadata.get("symbols"):
+                logger.warning("No symbols found in database, using defaults")
+                metadata = _default_market_metadata()
+            return metadata
+    except Exception as e:
+        logger.error(f"Error getting market metadata from database: {e}")
+        # Only fallback to defaults on actual database errors
+        return _default_market_metadata()
 
 
 @app.get("/signals", response_model=List[TradingSignalResponse])
@@ -212,12 +255,13 @@ async def get_sr_levels(
 async def get_swings(
     symbol: str,
     timeframe: str = Query("1h", description="Timeframe"),
+    limit: int = Query(100, ge=1, le=1000, description="Limit results"),
     db: Session = Depends(get_db)
 ):
     """Get latest swing points for a symbol"""
     try:
         with StorageService() as storage:
-            swings = storage.get_latest_swings(symbol, timeframe)
+            swings = storage.get_latest_swings(symbol, timeframe, limit)
             return swings
     except Exception as e:
         logger.error(f"Error getting swings: {e}")

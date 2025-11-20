@@ -3,12 +3,14 @@
 import { useEffect } from "react";
 import { useMarketStore } from "@/stores/useMarketStore";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { 
-  fetchCandles, 
-  fetchSwingPoints, 
-  fetchSRLevels, 
-  fetchLatestSignal 
+import {
+  fetchCandles,
+  fetchSwingPoints,
+  fetchSRLevels,
+  fetchLatestSignal,
+  fetchMarketMetadata,
 } from "@/lib/api";
+import { Timeframe } from "@/lib/types";
 import { ChartContainer } from "@/components/chart/ChartContainer";
 import { SymbolSelector } from "@/components/ui/SymbolSelector";
 import { TimeframeSelector } from "@/components/ui/TimeframeSelector";
@@ -27,6 +29,9 @@ export default function DashboardPage() {
   const {
     selectedSymbol,
     selectedTimeframe,
+    availableSymbols,
+    availableTimeframes,
+    symbolTimeframes,
     latestSignal,
     chartSettings,
     updateChartSettings,
@@ -34,12 +39,63 @@ export default function DashboardPage() {
     setSwingPoints,
     setSRLevels,
     setLatestSignal,
+    setSelectedSymbol,
+    setSelectedTimeframe,
+    setMarketMetadata,
     setLoading,
     setError,
   } = useMarketStore();
 
   // Initialize WebSocket connection
   useWebSocket(selectedSymbol, selectedTimeframe);
+
+  // Load symbol/timeframe metadata
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadMetadata = async () => {
+      try {
+        const metadata = await fetchMarketMetadata();
+        if (!isMounted) return;
+        setMarketMetadata(metadata);
+      } catch (error) {
+        console.error("Error loading market metadata:", error);
+      }
+    };
+
+    loadMetadata();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [setMarketMetadata]);
+
+  useEffect(() => {
+    if (availableSymbols.length && !availableSymbols.includes(selectedSymbol)) {
+      setSelectedSymbol(availableSymbols[0]);
+    }
+  }, [availableSymbols, selectedSymbol, setSelectedSymbol]);
+
+  // Ensure timeframe stays valid for selected symbol
+  useEffect(() => {
+    const symbolSpecificTimeframes =
+      symbolTimeframes[selectedSymbol] && symbolTimeframes[selectedSymbol].length
+        ? symbolTimeframes[selectedSymbol]
+        : availableTimeframes;
+
+    if (
+      symbolSpecificTimeframes.length &&
+      !symbolSpecificTimeframes.includes(selectedTimeframe)
+    ) {
+      setSelectedTimeframe(symbolSpecificTimeframes[0] as Timeframe);
+    }
+  }, [
+    selectedSymbol,
+    selectedTimeframe,
+    symbolTimeframes,
+    availableTimeframes,
+    setSelectedTimeframe,
+  ]);
 
   // Fetch initial data
   useEffect(() => {
@@ -115,7 +171,7 @@ export default function DashboardPage() {
               <Switch
                 id="show-fibs"
                 checked={chartSettings.showFibs}
-                onCheckedChange={(checked) =>
+                onCheckedChange={(checked: boolean) =>
                   updateChartSettings({ showFibs: checked })
                 }
               />
@@ -127,7 +183,7 @@ export default function DashboardPage() {
               <Switch
                 id="show-ob"
                 checked={chartSettings.showOrderBlocks}
-                onCheckedChange={(checked) =>
+                onCheckedChange={(checked: boolean) =>
                   updateChartSettings({ showOrderBlocks: checked })
                 }
               />
@@ -139,7 +195,7 @@ export default function DashboardPage() {
               <Switch
                 id="show-sr"
                 checked={chartSettings.showSR}
-                onCheckedChange={(checked) =>
+                onCheckedChange={(checked: boolean) =>
                   updateChartSettings({ showSR: checked })
                 }
               />
@@ -151,7 +207,7 @@ export default function DashboardPage() {
               <Switch
                 id="show-swings"
                 checked={chartSettings.showSwings}
-                onCheckedChange={(checked) =>
+                onCheckedChange={(checked: boolean) =>
                   updateChartSettings({ showSwings: checked })
                 }
               />
@@ -163,7 +219,7 @@ export default function DashboardPage() {
               <Switch
                 id="show-entry"
                 checked={chartSettings.showEntrySLTP}
-                onCheckedChange={(checked) =>
+                onCheckedChange={(checked: boolean) =>
                   updateChartSettings({ showEntrySLTP: checked })
                 }
               />

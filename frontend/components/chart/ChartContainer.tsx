@@ -122,13 +122,17 @@ export function ChartContainer({
     }
   }, [candles, selectedSymbol, selectedTimeframe]);
 
-  // Render overlays
-  const currentSwings = swingPoints.filter(
-    (s) => s.symbol === selectedSymbol && s.timeframe === selectedTimeframe
-  );
-  const currentSR = srLevels.filter(
-    (s) => s.symbol === selectedSymbol && s.timeframe === selectedTimeframe
-  );
+  // Render overlays - ensure arrays are always arrays
+  const currentSwings = Array.isArray(swingPoints)
+    ? swingPoints.filter(
+        (s) => s.symbol === selectedSymbol && s.timeframe === selectedTimeframe
+      )
+    : [];
+  const currentSR = Array.isArray(srLevels)
+    ? srLevels.filter(
+        (s) => s.symbol === selectedSymbol && s.timeframe === selectedTimeframe
+      )
+    : [];
 
   return (
     <div className="relative w-full h-full">

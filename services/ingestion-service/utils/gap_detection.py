@@ -36,7 +36,7 @@ async def backfill_recent_candles(
     
     Args:
         binance_service: BinanceIngestionService instance
-        symbol: Trading symbol (e.g., "BTCUSDT")
+        symbol: Trading symbol (e.g., "BTCUSDT") - will be cleaned
         timeframe: Timeframe string (e.g., "1h", "1d")
         limit: Number of recent candles to fetch (default: 400)
         max_retries: Maximum retry attempts for API calls
@@ -44,9 +44,19 @@ async def backfill_recent_candles(
     Returns:
         Number of candles inserted
     """
+    # Clean symbol: remove @ prefix if present (from WebSocket stream names)
+    cleaned_symbol = symbol.lstrip("@").upper()
+    
+    if cleaned_symbol != symbol:
+        logger.warning(
+            "backfill_symbol_cleaned",
+            original=symbol,
+            cleaned=cleaned_symbol
+        )
+    
     logger.info(
         "backfill_recent_candles_starting",
-        symbol=symbol,
+        symbol=cleaned_symbol,
         timeframe=timeframe,
         limit=limit
     )
@@ -58,7 +68,7 @@ async def backfill_recent_candles(
     while retry_count <= max_retries:
         try:
             klines = await binance_service.fetch_klines(
-                symbol=symbol,
+                symbol=cleaned_symbol,
                 interval=timeframe,
                 limit=limit
             )
@@ -78,7 +88,7 @@ async def backfill_recent_candles(
                     wait_time = 5 * (2 ** (retry_count - 1))
                     logger.warning(
                         "backfill_rate_limited",
-                        symbol=symbol,
+                        symbol=cleaned_symbol,
                         timeframe=timeframe,
                         retry=retry_count,
                         max_retries=max_retries,
@@ -89,7 +99,7 @@ async def backfill_recent_candles(
                 else:
                     logger.error(
                         "backfill_rate_limit_exceeded",
-                        symbol=symbol,
+                        symbol=cleaned_symbol,
                         timeframe=timeframe,
                         retries=retry_count,
                         status_code=e.status
@@ -102,7 +112,7 @@ async def backfill_recent_candles(
                     wait_time = retry_count * 2  # 2s, 4s, 6s
                     logger.warning(
                         "backfill_retry",
-                        symbol=symbol,
+                        symbol=cleaned_symbol,
                         timeframe=timeframe,
                         retry=retry_count,
                         max_retries=max_retries,
@@ -114,7 +124,7 @@ async def backfill_recent_candles(
                 else:
                     logger.error(
                         "backfill_fetch_failed",
-                        symbol=symbol,
+                        symbol=cleaned_symbol,
                         timeframe=timeframe,
                         retries=retry_count,
                         error=str(e),
@@ -129,7 +139,7 @@ async def backfill_recent_candles(
                 wait_time = retry_count * 2  # 2s, 4s, 6s
                 logger.warning(
                     "backfill_retry",
-                    symbol=symbol,
+                    symbol=cleaned_symbol,
                     timeframe=timeframe,
                     retry=retry_count,
                     max_retries=max_retries,
@@ -140,7 +150,7 @@ async def backfill_recent_candles(
             else:
                 logger.error(
                     "backfill_fetch_failed",
-                    symbol=symbol,
+                    symbol=cleaned_symbol,
                     timeframe=timeframe,
                     retries=retry_count,
                     error=str(e),
@@ -151,18 +161,18 @@ async def backfill_recent_candles(
     if not klines:
         logger.warning(
             "backfill_no_klines",
-            symbol=symbol,
+            symbol=cleaned_symbol,
             timeframe=timeframe
         )
         return 0
     
     # Parse klines into candle objects
-    candles = binance_service.parse_klines(klines, symbol, timeframe)
+    candles = binance_service.parse_klines(klines, cleaned_symbol, timeframe)
     
     if not candles:
         logger.warning(
             "backfill_no_candles_parsed",
-            symbol=symbol,
+            symbol=cleaned_symbol,
             timeframe=timeframe,
             klines_count=len(klines)
         )
@@ -170,7 +180,7 @@ async def backfill_recent_candles(
     
     logger.debug(
         "backfill_candles_parsed",
-        symbol=symbol,
+        symbol=cleaned_symbol,
         timeframe=timeframe,
         candles_count=len(candles),
         first_timestamp=candles[0].timestamp.isoformat() if candles else None,
@@ -179,14 +189,14 @@ async def backfill_recent_candles(
     
     # Batch check which candles already exist in database
     with DatabaseManager() as db:
-        # Get symbol_id and timeframe_id
-        symbol_id = get_or_create_symbol_record(db, symbol)
+        # Get symbol_id and timeframe_id (use cleaned symbol)
+        symbol_id = get_or_create_symbol_record(db, cleaned_symbol)
         timeframe_id = get_timeframe_id(db, timeframe)
         
         if not symbol_id or not timeframe_id:
             logger.error(
                 "backfill_id_resolution_failed",
-                symbol=symbol,
+                symbol=cleaned_symbol,
                 timeframe=timeframe,
                 symbol_id=symbol_id,
                 timeframe_id=timeframe_id
@@ -233,7 +243,7 @@ async def backfill_recent_candles(
                     
                     logger.debug(
                         "backfill_chunk_checked",
-                        symbol=symbol,
+                        symbol=cleaned_symbol,
                         timeframe=timeframe,
                         chunk=chunk_idx // chunk_size + 1,
                         chunk_size=len(chunk_timestamps),
@@ -243,7 +253,7 @@ async def backfill_recent_candles(
                     # Log error and continue with next chunk
                     logger.warning(
                         "backfill_chunk_query_error",
-                        symbol=symbol,
+                        symbol=cleaned_symbol,
                         timeframe=timeframe,
                         chunk=chunk_idx // chunk_size + 1,
                         chunk_size=len(chunk_timestamps),
@@ -264,7 +274,7 @@ async def backfill_recent_candles(
         
         logger.info(
             "backfill_candles_checked",
-            symbol=symbol,
+            symbol=cleaned_symbol,
             timeframe=timeframe,
             total_candles=len(candles),
             existing_candles=len(existing_timestamps),
@@ -278,7 +288,7 @@ async def backfill_recent_candles(
                 
                 logger.info(
                     "backfill_candles_inserted",
-                    symbol=symbol,
+                    symbol=cleaned_symbol,
                     timeframe=timeframe,
                     candles_inserted=len(missing_candles),
                     first_timestamp=missing_candles[0].timestamp.isoformat() if missing_candles else None,
@@ -289,7 +299,7 @@ async def backfill_recent_candles(
             except Exception as e:
                 logger.error(
                     "backfill_insert_failed",
-                    symbol=symbol,
+                    symbol=cleaned_symbol,
                     timeframe=timeframe,
                     candles_count=len(missing_candles),
                     error=str(e),
@@ -299,7 +309,7 @@ async def backfill_recent_candles(
         else:
             logger.debug(
                 "backfill_no_missing_candles",
-                symbol=symbol,
+                symbol=cleaned_symbol,
                 timeframe=timeframe
             )
             return 0

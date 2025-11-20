@@ -14,7 +14,6 @@ COPY services/sr-engine /app/sr-engine
 COPY services/fib-entry-engine /app/fib-entry-engine
 COPY services/confluence-engine /app/confluence-engine
 COPY services/risk-engine /app/risk-engine
-COPY services/storage-service /app/storage-service
 
 # Run Celery worker
 CMD ["celery", "-A", "main", "worker", "--loglevel=info"]

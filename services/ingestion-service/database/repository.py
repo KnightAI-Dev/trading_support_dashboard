@@ -110,7 +110,21 @@ def get_qualified_symbols(db: Session) -> List[str]:
             """)
         ).fetchall()
         
-        symbols = [row[0] for row in result]
+        # Clean symbols: remove @ prefix if present and ensure uppercase
+        symbols = []
+        for row in result:
+            symbol = row[0]
+            if symbol:
+                # Remove @ prefix if present (from WebSocket stream names)
+                cleaned = symbol.lstrip("@").upper()
+                if cleaned != symbol:
+                    logger.warning(
+                        "symbol_cleaned_from_db",
+                        original=symbol,
+                        cleaned=cleaned
+                    )
+                symbols.append(cleaned)
+        
         logger.info("qualified_symbols_found", count=len(symbols))
         return symbols
     except Exception as e:

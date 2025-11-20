@@ -81,7 +81,6 @@ trading_support_dashboard/
 │   ├── fib-entry-engine/        # Fibonacci levels
 │   ├── confluence-engine/       # Confluence scoring
 │   ├── risk-engine/             # Risk-reward calculations
-│   ├── storage-service/         # Database operations
 │   ├── api-service/             # FastAPI REST API
 │   └── worker-service/           # Celery task queue
 ├── docker-compose.yml           # Docker orchestration
@@ -238,7 +237,7 @@ GET /swings/{symbol}?timeframe=1h
    - Fibonacci calculation
    - Confluence scoring
    - Risk-reward calculation
-4. **Storage Service** saves final trading signal
+4. **Storage module** (in `shared/`) saves final trading signal
 5. **API Service** exposes signals via REST API
 
 ## 🧪 Development
@@ -313,10 +312,11 @@ The system generates trading signals in this format:
 - Validates setup criteria
 - Computes confidence scores
 
-### Storage Service
+### Storage Module (shared/storage.py)
 - Database abstraction layer
 - Signal persistence
 - Data retrieval operations
+- Used by API service and worker service
 
 ### API Service
 - FastAPI REST API

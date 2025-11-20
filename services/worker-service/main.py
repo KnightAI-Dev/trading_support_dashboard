@@ -33,8 +33,7 @@ from main import calculate_confluence
 sys.path.append(os.path.join(os.path.dirname(__file__), '../risk-engine'))
 from main import calculate_risk_reward, RiskEngine
 
-sys.path.append(os.path.join(os.path.dirname(__file__), '../storage-service'))
-from main import save_signal, StorageService
+from shared.storage import save_signal, StorageService
 
 logger = setup_logger(__name__)
 
