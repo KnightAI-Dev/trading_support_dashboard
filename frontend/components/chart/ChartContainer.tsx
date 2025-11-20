@@ -106,13 +106,15 @@ export function ChartContainer({
       (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
     );
 
-    const chartData: CandlestickData[] = filteredCandles.map((candle) => ({
-      time: (new Date(candle.timestamp).getTime() / 1000) as Time,
-      open: candle.open,
-      high: candle.high,
-      low: candle.low,
-      close: candle.close,
-    }));
+    const chartData: CandlestickData[] = filteredCandles
+      .map((candle) => ({
+        time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      }))
+      .sort((a, b) => (a.time as number) - (b.time as number)); // Sort ascending by time
 
     seriesRef.current.setData(chartData);
     

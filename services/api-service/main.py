@@ -217,19 +217,8 @@ async def get_candles(
     try:
         with StorageService() as storage:
             candles = storage.get_latest_candles(symbol, timeframe, limit)
-            return [
-                {
-                    "symbol": c.symbol,
-                    "timeframe": c.timeframe,
-                    "timestamp": c.timestamp,
-                    "open": float(c.open),
-                    "high": float(c.high),
-                    "low": float(c.low),
-                    "close": float(c.close),
-                    "volume": float(c.volume)
-                }
-                for c in candles
-            ]
+            # Storage service already returns properly formatted dictionaries
+            return candles
     except Exception as e:
         logger.error(f"Error getting candles: {e}")
         raise HTTPException(status_code=500, detail=str(e))

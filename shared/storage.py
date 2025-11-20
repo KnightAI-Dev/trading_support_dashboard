@@ -82,12 +82,73 @@ class StorageService:
             self.db.rollback()
             return None
     
-    def get_latest_signal(self, symbol: str) -> Optional[TradingSignal]:
-        """Get latest trading signal for a symbol"""
+    def get_latest_signal(self, symbol: str) -> Optional[Dict]:
+        """Get latest trading signal for a symbol from database"""
         try:
-            return self.db.query(TradingSignal).filter(
-                TradingSignal.symbol == symbol
-            ).order_by(desc(TradingSignal.timestamp)).first()
+            # Query using raw SQL to join with symbols table
+            # The database schema uses symbol_id as a foreign key
+            query = text("""
+                SELECT 
+                    ts.id,
+                    s.symbol_name as symbol,
+                    ts.timestamp,
+                    ts.market_score,
+                    ts.direction,
+                    ts.price,
+                    ts.entry1,
+                    ts.entry2,
+                    ts.sl,
+                    ts.tp1,
+                    ts.tp2,
+                    ts.tp3,
+                    ts.swing_high,
+                    ts.swing_low,
+                    ts.support_level,
+                    ts.resistance_level,
+                    ts.confluence,
+                    ts.risk_reward_ratio,
+                    ts.pullback_detected,
+                    ts.pullback_start_level,
+                    ts.approaching_fib_level,
+                    ts.confidence_score
+                FROM trading_signals ts
+                INNER JOIN symbols s ON ts.symbol_id = s.symbol_id
+                WHERE s.symbol_name = :symbol
+                ORDER BY ts.timestamp DESC
+                LIMIT 1
+            """)
+            
+            result = self.db.execute(query, {"symbol": symbol})
+            row = result.fetchone()
+            
+            if not row:
+                return None
+            
+            # Convert to dictionary matching frontend interface
+            return {
+                "id": row[0],
+                "symbol": row[1],
+                "timestamp": row[2].isoformat() if hasattr(row[2], 'isoformat') else str(row[2]),
+                "market_score": int(row[3]),
+                "direction": row[4],
+                "price": float(row[5]),
+                "entry1": float(row[6]) if row[6] is not None else None,
+                "entry2": float(row[7]) if row[7] is not None else None,
+                "sl": float(row[8]) if row[8] is not None else None,
+                "tp1": float(row[9]) if row[9] is not None else None,
+                "tp2": float(row[10]) if row[10] is not None else None,
+                "tp3": float(row[11]) if row[11] is not None else None,
+                "swing_high": float(row[12]) if row[12] is not None else None,
+                "swing_low": float(row[13]) if row[13] is not None else None,
+                "support_level": float(row[14]) if row[14] is not None else None,
+                "resistance_level": float(row[15]) if row[15] is not None else None,
+                "confluence": row[16],
+                "risk_reward_ratio": float(row[17]) if row[17] is not None else None,
+                "pullback_detected": bool(row[18]) if row[18] is not None else False,
+                "pullback_start_level": float(row[19]) if row[19] is not None else None,
+                "approaching_fib_level": float(row[20]) if row[20] is not None else None,
+                "confidence_score": float(row[21]) if row[21] is not None else None,
+            }
         except Exception as e:
             logger.error(f"Error getting latest signal: {e}")
             return None
@@ -97,18 +158,85 @@ class StorageService:
         symbol: Optional[str] = None,
         direction: Optional[str] = None,
         limit: int = 100
-    ) -> List[TradingSignal]:
-        """Get trading signals with filters"""
+    ) -> List[Dict]:
+        """Get trading signals with filters from database"""
         try:
-            query = self.db.query(TradingSignal)
+            # Build query using raw SQL to join with symbols table
+            base_query = """
+                SELECT 
+                    ts.id,
+                    s.symbol_name as symbol,
+                    ts.timestamp,
+                    ts.market_score,
+                    ts.direction,
+                    ts.price,
+                    ts.entry1,
+                    ts.entry2,
+                    ts.sl,
+                    ts.tp1,
+                    ts.tp2,
+                    ts.tp3,
+                    ts.swing_high,
+                    ts.swing_low,
+                    ts.support_level,
+                    ts.resistance_level,
+                    ts.confluence,
+                    ts.risk_reward_ratio,
+                    ts.pullback_detected,
+                    ts.pullback_start_level,
+                    ts.approaching_fib_level,
+                    ts.confidence_score
+                FROM trading_signals ts
+                INNER JOIN symbols s ON ts.symbol_id = s.symbol_id
+                WHERE 1=1
+            """
+            
+            params = {}
             
             if symbol:
-                query = query.filter(TradingSignal.symbol == symbol)
+                base_query += " AND s.symbol_name = :symbol"
+                params["symbol"] = symbol
             
             if direction:
-                query = query.filter(TradingSignal.direction == direction)
+                base_query += " AND ts.direction = :direction"
+                params["direction"] = direction
             
-            return query.order_by(desc(TradingSignal.timestamp)).limit(limit).all()
+            base_query += " ORDER BY ts.timestamp DESC LIMIT :limit"
+            params["limit"] = limit
+            
+            query = text(base_query)
+            result = self.db.execute(query, params)
+            rows = result.fetchall()
+            
+            # Convert to list of dictionaries matching frontend interface
+            signals = []
+            for row in rows:
+                signals.append({
+                    "id": row[0],
+                    "symbol": row[1],
+                    "timestamp": row[2].isoformat() if hasattr(row[2], 'isoformat') else str(row[2]),
+                    "market_score": int(row[3]),
+                    "direction": row[4],
+                    "price": float(row[5]),
+                    "entry1": float(row[6]) if row[6] is not None else None,
+                    "entry2": float(row[7]) if row[7] is not None else None,
+                    "sl": float(row[8]) if row[8] is not None else None,
+                    "tp1": float(row[9]) if row[9] is not None else None,
+                    "tp2": float(row[10]) if row[10] is not None else None,
+                    "tp3": float(row[11]) if row[11] is not None else None,
+                    "swing_high": float(row[12]) if row[12] is not None else None,
+                    "swing_low": float(row[13]) if row[13] is not None else None,
+                    "support_level": float(row[14]) if row[14] is not None else None,
+                    "resistance_level": float(row[15]) if row[15] is not None else None,
+                    "confluence": row[16],
+                    "risk_reward_ratio": float(row[17]) if row[17] is not None else None,
+                    "pullback_detected": bool(row[18]) if row[18] is not None else False,
+                    "pullback_start_level": float(row[19]) if row[19] is not None else None,
+                    "approaching_fib_level": float(row[20]) if row[20] is not None else None,
+                    "confidence_score": float(row[21]) if row[21] is not None else None,
+                })
+            
+            return signals
         except Exception as e:
             logger.error(f"Error getting signals: {e}")
             return []
@@ -118,15 +246,54 @@ class StorageService:
         symbol: str,
         timeframe: str,
         limit: int = 100
-    ) -> List[OHLCVCandle]:
-        """Get latest candles for a symbol"""
+    ) -> List[Dict]:
+        """Get latest candles for a symbol from database"""
         try:
-            return self.db.query(OHLCVCandle).filter(
-                and_(
-                    OHLCVCandle.symbol == symbol,
-                    OHLCVCandle.timeframe == timeframe
-                )
-            ).order_by(desc(OHLCVCandle.timestamp)).limit(limit).all()
+            # Query using raw SQL to join with symbols and timeframe tables
+            # The database schema uses symbol_id and timeframe_id as foreign keys
+            query = text("""
+                SELECT 
+                    oc.id,
+                    s.symbol_name as symbol,
+                    t.tf_name as timeframe,
+                    oc.timestamp,
+                    oc.open,
+                    oc.high,
+                    oc.low,
+                    oc.close,
+                    oc.volume
+                FROM ohlcv_candles oc
+                INNER JOIN symbols s ON oc.symbol_id = s.symbol_id
+                INNER JOIN timeframe t ON oc.timeframe_id = t.timeframe_id
+                WHERE s.symbol_name = :symbol
+                AND t.tf_name = :timeframe
+                ORDER BY oc.timestamp DESC
+                LIMIT :limit
+            """)
+            
+            result = self.db.execute(
+                query,
+                {"symbol": symbol, "timeframe": timeframe, "limit": limit}
+            )
+            rows = result.fetchall()
+            
+            # Convert to list of dictionaries matching frontend interface
+            candles = []
+            for row in rows:
+                candles.append({
+                    "id": row[0],
+                    "symbol": row[1],
+                    "timeframe": row[2],
+                    "timestamp": row[3].isoformat() if hasattr(row[3], 'isoformat') else str(row[3]),
+                    "open": float(row[4]),
+                    "high": float(row[5]),
+                    "low": float(row[6]),
+                    "close": float(row[7]),
+                    "volume": float(row[8])
+                })
+            
+            logger.debug(f"Retrieved {len(candles)} candles for {symbol} {timeframe}")
+            return candles
         except Exception as e:
             logger.error(f"Error getting candles: {e}")
             return []
