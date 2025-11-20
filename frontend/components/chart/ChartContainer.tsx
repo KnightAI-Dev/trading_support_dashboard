@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   createChart,
   IChartApi,
@@ -10,7 +10,7 @@ import {
   ColorType,
 } from "lightweight-charts";
 import { useMarketStore } from "@/stores/useMarketStore";
-import { Candle } from "@/lib/api";
+import { Candle, fetchCandles } from "@/lib/api";
 import { SwingMarkers } from "./SwingMarkers";
 import { FibonacciOverlay } from "./FibonacciOverlay";
 import { OrderBlockOverlay } from "./OrderBlockOverlay";
@@ -30,6 +30,9 @@ export function ChartContainer({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const [containerWidth, setContainerWidth] = useState(width || 800);
+  const [oldestLoadedTime, setOldestLoadedTime] = useState<number | null>(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const loadMoreTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const {
     candles,
@@ -39,6 +42,7 @@ export function ChartContainer({
     srLevels,
     latestSignal,
     chartSettings,
+    setCandles,
   } = useMarketStore();
 
   // Initialize chart
@@ -98,6 +102,142 @@ export function ChartContainer({
     };
   }, [height]);
 
+  // Load more historical data when user scrolls back
+  const loadMoreHistoricalData = useCallback(
+    async (beforeTime: number) => {
+      if (isLoadingMore || !selectedSymbol || !selectedTimeframe) return;
+
+      // Check if we've already loaded data before this time
+      if (oldestLoadedTime && beforeTime >= oldestLoadedTime) {
+        return; // Already have data for this range
+      }
+
+      setIsLoadingMore(true);
+      try {
+        const beforeDate = new Date(beforeTime * 1000).toISOString();
+        const newCandles = await fetchCandles(
+          selectedSymbol,
+          selectedTimeframe,
+          500, // Load 500 more candles
+          beforeDate
+        );
+
+        if (newCandles.length > 0) {
+          // Get current candles from the store state
+          const currentCandles = useMarketStore.getState().candles;
+          
+          // Separate candles for current symbol/timeframe and others
+          const otherCandles = currentCandles.filter(
+            (c) => !(c.symbol === selectedSymbol && c.timeframe === selectedTimeframe)
+          );
+          const filteredExisting = currentCandles.filter(
+            (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
+          );
+
+          // Merge and deduplicate by timestamp for current symbol/timeframe
+          const candleMap = new Map<string, Candle>();
+          
+          // Add existing candles for current symbol/timeframe
+          filteredExisting.forEach((candle) => {
+            candleMap.set(candle.timestamp, candle);
+          });
+
+          // Add new candles (they will overwrite if duplicate, but new ones should be older)
+          newCandles.forEach((candle) => {
+            if (!candleMap.has(candle.timestamp)) {
+              candleMap.set(candle.timestamp, candle);
+            }
+          });
+
+          // Convert back to array and sort by timestamp
+          const mergedForSymbol = Array.from(candleMap.values()).sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+
+          // Combine with other candles and update store
+          setCandles([...otherCandles, ...mergedForSymbol]);
+
+          // Update oldest loaded time
+          const oldest = Math.min(
+            ...newCandles.map((c) => new Date(c.timestamp).getTime())
+          );
+          setOldestLoadedTime(oldest / 1000);
+        } else {
+          // No more data available
+          setOldestLoadedTime(beforeTime);
+        }
+      } catch (error) {
+        console.error("Error loading more historical data:", error);
+      } finally {
+        setIsLoadingMore(false);
+      }
+    },
+    [selectedSymbol, selectedTimeframe, isLoadingMore, oldestLoadedTime, setCandles]
+  );
+
+  // Set up scroll listener for lazy loading
+  useEffect(() => {
+    if (!chartRef.current) return;
+
+    const chart = chartRef.current;
+    let isSubscribed = true;
+
+    const handleVisibleTimeRangeChange = () => {
+      if (!isSubscribed || isLoadingMore) return;
+
+      const visibleRange = chart.timeScale().getVisibleRange();
+      if (!visibleRange || !visibleRange.from) return;
+
+      // Clear any pending timeout
+      if (loadMoreTimeoutRef.current) {
+        clearTimeout(loadMoreTimeoutRef.current);
+      }
+
+      // Debounce the load more request
+      loadMoreTimeoutRef.current = setTimeout(() => {
+        if (!isSubscribed) return;
+
+        // Check if user scrolled to the left (older data)
+        // Load more if we're within 20% of the oldest loaded data
+        // Convert Time to number (unix timestamp)
+        const convertTimeToNumber = (time: Time): number => {
+          if (typeof time === 'number') return time;
+          if (typeof time === 'string') return new Date(time).getTime() / 1000;
+          // BusinessDay object - convert to timestamp
+          const bd = time as { year: number; month: number; day: number };
+          return new Date(bd.year, bd.month - 1, bd.day).getTime() / 1000;
+        };
+        
+        const fromTime = convertTimeToNumber(visibleRange.from);
+        const toTime = visibleRange.to ? convertTimeToNumber(visibleRange.to) : Date.now() / 1000;
+        
+        if (oldestLoadedTime) {
+          const threshold = oldestLoadedTime + (toTime - fromTime) * 0.2;
+          if (fromTime < threshold) {
+            loadMoreHistoricalData(fromTime);
+          }
+        } else if (fromTime < Date.now() / 1000 - 86400) {
+          // If we don't have oldestLoadedTime yet, load if scrolled back more than 1 day
+          loadMoreHistoricalData(fromTime);
+        }
+      }, 300); // 300ms debounce
+    };
+
+    // Subscribe to visible time range changes
+    // Note: TradingView Lightweight Charts doesn't provide an unsubscribe method
+    // We use the isSubscribed flag to prevent callbacks after unmount
+    chart.timeScale().subscribeVisibleTimeRangeChange(handleVisibleTimeRangeChange);
+
+    return () => {
+      isSubscribed = false;
+      if (loadMoreTimeoutRef.current) {
+        clearTimeout(loadMoreTimeoutRef.current);
+      }
+      // Note: TradingView doesn't provide unsubscribe, but setting isSubscribed = false
+      // prevents the callback from executing after cleanup
+    };
+  }, [oldestLoadedTime, isLoadingMore, loadMoreHistoricalData]);
+
   // Update candles data
   useEffect(() => {
     if (!seriesRef.current || !candles.length) return;
@@ -116,13 +256,32 @@ export function ChartContainer({
       }))
       .sort((a, b) => (a.time as number) - (b.time as number)); // Sort ascending by time
 
+    // Update the series data
+    // Note: setData replaces all data, so we need to pass the complete sorted array
     seriesRef.current.setData(chartData);
-    
-    // Fit content
-    if (chartRef.current && chartData.length > 0) {
-      chartRef.current.timeScale().fitContent();
+
+    // Update oldest loaded time if we have new data
+    if (chartData.length > 0) {
+      const oldest = Math.min(...chartData.map((d) => d.time as number));
+      if (!oldestLoadedTime || oldest < oldestLoadedTime) {
+        setOldestLoadedTime(oldest);
+      }
     }
-  }, [candles, selectedSymbol, selectedTimeframe]);
+    
+    // Fit content only on initial load or symbol/timeframe change
+    if (chartRef.current && chartData.length > 0) {
+      // Only fit content if we don't have a visible range set (initial load)
+      const visibleRange = chartRef.current.timeScale().getVisibleRange();
+      if (!visibleRange) {
+        chartRef.current.timeScale().fitContent();
+      }
+    }
+  }, [candles, selectedSymbol, selectedTimeframe, oldestLoadedTime]);
+
+  // Reset oldest loaded time when symbol or timeframe changes
+  useEffect(() => {
+    setOldestLoadedTime(null);
+  }, [selectedSymbol, selectedTimeframe]);
 
   // Render overlays - ensure arrays are always arrays
   const currentSwings = Array.isArray(swingPoints)

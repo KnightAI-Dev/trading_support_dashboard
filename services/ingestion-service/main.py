@@ -264,6 +264,7 @@ async def main():
                         logger.error("error_flushing_final_batch", error=str(e))
                 
                 logger.info("shutdown_completed")
+
     finally:
         # Cancel the hourly update task
         update_task.cancel()

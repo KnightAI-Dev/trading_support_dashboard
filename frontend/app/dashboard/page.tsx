@@ -109,7 +109,7 @@ export default function DashboardPage() {
       setError(null);
       try {
         const [candles, swings, srLevels, signal] = await Promise.all([
-          fetchCandles(selectedSymbol, selectedTimeframe, 200),
+          fetchCandles(selectedSymbol, selectedTimeframe, 1000),
           fetchSwingPoints(selectedSymbol, selectedTimeframe),
           fetchSRLevels(selectedSymbol, selectedTimeframe),
           fetchLatestSignal(selectedSymbol),

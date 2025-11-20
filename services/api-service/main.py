@@ -211,12 +211,13 @@ async def get_candles(
     symbol: str,
     timeframe: str = Query("1h", description="Timeframe"),
     limit: int = Query(100, ge=1, le=1000, description="Limit results"),
+    before: Optional[str] = Query(None, description="Fetch candles before this timestamp (ISO format)"),
     db: Session = Depends(get_db)
 ):
-    """Get OHLCV candles for a symbol"""
+    """Get OHLCV candles for a symbol, optionally before a timestamp"""
     try:
         with StorageService() as storage:
-            candles = storage.get_latest_candles(symbol, timeframe, limit)
+            candles = storage.get_latest_candles(symbol, timeframe, limit, before)
             # Storage service already returns properly formatted dictionaries
             return candles
     except Exception as e:

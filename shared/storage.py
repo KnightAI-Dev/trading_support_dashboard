@@ -245,13 +245,14 @@ class StorageService:
         self,
         symbol: str,
         timeframe: str,
-        limit: int = 100
+        limit: int = 100,
+        before: Optional[str] = None
     ) -> List[Dict]:
-        """Get latest candles for a symbol from database"""
+        """Get latest candles for a symbol from database, optionally before a timestamp"""
         try:
             # Query using raw SQL to join with symbols and timeframe tables
             # The database schema uses symbol_id and timeframe_id as foreign keys
-            query = text("""
+            base_query = """
                 SELECT 
                     oc.id,
                     s.symbol_name as symbol,
@@ -267,14 +268,20 @@ class StorageService:
                 INNER JOIN timeframe t ON oc.timeframe_id = t.timeframe_id
                 WHERE s.symbol_name = :symbol
                 AND t.tf_name = :timeframe
-                ORDER BY oc.timestamp DESC
-                LIMIT :limit
-            """)
+            """
             
-            result = self.db.execute(
-                query,
-                {"symbol": symbol, "timeframe": timeframe, "limit": limit}
-            )
+            params = {"symbol": symbol, "timeframe": timeframe, "limit": limit}
+            
+            # Add before timestamp filter if provided
+            if before:
+                base_query += " AND oc.timestamp < :before"
+                params["before"] = before
+            
+            base_query += " ORDER BY oc.timestamp DESC LIMIT :limit"
+            
+            query = text(base_query)
+            
+            result = self.db.execute(query, params)
             rows = result.fetchall()
             
             # Convert to list of dictionaries matching frontend interface
