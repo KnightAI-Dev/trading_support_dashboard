@@ -42,6 +42,7 @@ export function useSymbolData() {
         base,
         quote: "USDT",
         marketcap: Math.random() * 1000000000000,
+        volume_24h: Math.random() * 50000000000,
         price: basePrice,
         change24h,
       };
