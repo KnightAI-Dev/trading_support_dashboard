@@ -30,7 +30,6 @@ def publish_event(channel: str, data: dict):
     """Publish event to Redis channel"""
     if redis_client:
         try:
-            logger.info(f"Publishing event: {data}")
             redis_client.publish(channel, json.dumps(data))
         except Exception as e:
             logger.error(f"Failed to publish event: {e}")

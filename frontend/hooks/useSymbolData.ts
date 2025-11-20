@@ -1,7 +1,27 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { SymbolItem } from "@/components/ui/SymbolManager";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+// Global callback registry for symbol updates
+let symbolUpdateCallbacks: Set<(update: Partial<SymbolItem>) => void> = new Set();
+
+export function subscribeToSymbolUpdates(callback: (update: Partial<SymbolItem>) => void) {
+  symbolUpdateCallbacks.add(callback);
+  return () => {
+    symbolUpdateCallbacks.delete(callback);
+  };
+}
+
+export function notifySymbolUpdate(update: Partial<SymbolItem>) {
+  symbolUpdateCallbacks.forEach(callback => {
+    try {
+      callback(update);
+    } catch (error) {
+      console.error("Error in symbol update callback:", error);
+    }
+  });
+}
 
 /**
  * Hook to fetch and manage symbol data with prices
@@ -83,14 +103,42 @@ export function useSymbolData() {
 
   useEffect(() => {
     fetchSymbolData();
-
-    // Optionally set up polling for live price updates
-    // const interval = setInterval(() => {
-    //   fetchSymbolData();
-    // }, 30000); // Update every 30 seconds
-
-    // return () => clearInterval(interval);
   }, [fetchSymbolData]);
+
+  // Subscribe to WebSocket symbol updates
+  useEffect(() => {
+    const unsubscribe = subscribeToSymbolUpdates((update) => {
+      // Update symbol data when WebSocket receives an update
+      setSymbols((prevSymbols) => {
+        const symbolIndex = prevSymbols.findIndex((s) => s.symbol === update.symbol);
+        if (symbolIndex >= 0) {
+          // Update existing symbol
+          const updated = [...prevSymbols];
+          updated[symbolIndex] = {
+            ...updated[symbolIndex],
+            ...update,
+          };
+          return updated;
+        } else {
+          // Symbol not in list yet, add it if it has required fields
+          if (update.symbol && update.price !== undefined) {
+            return [...prevSymbols, {
+              symbol: update.symbol,
+              base: update.base || update.symbol.replace("USDT", ""),
+              quote: update.quote || "USDT",
+              marketcap: update.marketcap ?? 0,
+              volume_24h: update.volume_24h ?? 0,
+              price: update.price,
+              change24h: update.change24h ?? 0,
+            }];
+          }
+          return prevSymbols;
+        }
+      });
+    });
+
+    return unsubscribe;
+  }, []);
 
   return { symbols, isLoading, error, refetch: fetchSymbolData };
 }

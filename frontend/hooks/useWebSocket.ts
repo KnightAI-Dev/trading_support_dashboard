@@ -1,6 +1,8 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useMarketStore } from "@/stores/useMarketStore";
 import { TradingSignal, Candle, SwingPoint } from "@/lib/api";
+import { notifySymbolUpdate } from "@/hooks/useSymbolData";
+import { SymbolItem } from "@/components/ui/SymbolManager";
 
 const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "ws://localhost:8000/ws";
 
@@ -8,7 +10,10 @@ export type WebSocketEvent =
   | { type: "signal"; data: TradingSignal }
   | { type: "candle"; data: Candle }
   | { type: "swing"; data: SwingPoint }
-  | { type: "indicator"; data: any };
+  | { type: "symbol_update"; data: Partial<SymbolItem> }
+  | { type: "marketcap_update"; data: Partial<SymbolItem> }
+  | { type: "indicator"; data: any }
+  | { type: "connected" | "subscribed" | "error"; message?: string; symbol?: string; timeframe?: string };
 
 export function useWebSocket(symbol?: string, timeframe?: string) {
   const wsRef = useRef<WebSocket | null>(null);
@@ -52,7 +57,14 @@ export function useWebSocket(symbol?: string, timeframe?: string) {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          console.log("WebSocket message received:", message);
+          if (message.type === "symbol_update") {
+            if (message.data.symbol === "BTCUSDT") {
+              console.log("current time:", new Date().toISOString());
+              console.log("timestamp:", message.data.timestamp);
+              console.log("BTCUSDT price updated:", message.data.price);
+            }
+          }
+          // console.log("WebSocket message received:", message);
           handleMessage(message);
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);
@@ -96,6 +108,19 @@ export function useWebSocket(symbol?: string, timeframe?: string) {
           break;
         case "swing":
           addSwingPoint(message.data);
+          break;
+        case "symbol_update":
+          // Notify symbol data subscribers about the update
+          notifySymbolUpdate(message.data);
+          break;
+        case "marketcap_update":
+          // Notify symbol data subscribers about market cap/volume update
+          notifySymbolUpdate(message.data);
+          break;
+        case "connected":
+        case "subscribed":
+          // Handle connection/subscription confirmations
+          console.log("WebSocket:", message.type, message.message);
           break;
         case "indicator":
           // Handle indicator updates

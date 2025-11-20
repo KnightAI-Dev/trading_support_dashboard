@@ -102,13 +102,22 @@ class BinanceWebSocketService:
         binance_interval = self.map_timeframe_to_binance_interval(interval)
         return f"{symbol.lower()}@kline_{binance_interval}"
     
+    def build_ticker_stream_name(self, symbol: str) -> str:
+        """Build stream name for ticker: symbol@ticker"""
+        return f"{symbol.lower()}@ticker"
+    
     def build_multi_stream_url(self, symbols: List[str], timeframes: List[str]) -> str:
-        """Build multi-stream URL for multiple symbols and timeframes"""
+        """Build multi-stream URL for multiple symbols and timeframes, including ticker streams"""
         streams = []
+        # Add kline streams
         for symbol in symbols:
             for timeframe in timeframes:
                 stream_name = self.build_stream_name(symbol, timeframe)
                 streams.append(stream_name)
+        # Add ticker streams (one per symbol for real-time price/volume updates)
+        for symbol in symbols:
+            ticker_stream = self.build_ticker_stream_name(symbol)
+            streams.append(ticker_stream)
         
         # Multi-stream format: ?streams=stream1/stream2/stream3
         streams_str = "/".join(streams)
@@ -203,6 +212,60 @@ class BinanceWebSocketService:
                 error=str(e),
                 exc_info=True
             )
+            return None
+    
+    def parse_ticker_message(self, message: Dict) -> Optional[Dict]:
+        """Parse ticker WebSocket message for real-time price and volume updates
+        
+        Handles both single-stream and multi-stream formats:
+        - Single: {"e":"24hrTicker","E":...,"s":"BTCUSDT","c":"50000.00","q":"1000000.00",...}
+        - Multi: {"stream":"btcusdt@ticker","data":{"e":"24hrTicker",...}}
+        
+        Returns:
+            Dict with symbol, price, volume_24h, and change24h, or None if invalid
+        """
+        try:
+            # Handle multi-stream format
+            if "stream" in message and "data" in message:
+                data = message["data"]
+            # Handle single-stream format
+            elif "e" in message and message.get("e") == "24hrTicker":
+                data = message
+            else:
+                return None
+            
+            if data.get("e") != "24hrTicker":
+                return None
+            
+            symbol = data.get("s")  # Symbol
+            if not symbol:
+                return None
+            
+            # Extract price and volume data
+            last_price = data.get("c")  # Last price (string)
+            quote_volume = data.get("q")  # Quote volume (24h volume in quote currency, string)
+            price_change_percent = data.get("P")  # Price change percent (24h, string)
+            
+            # Convert to float, handling None/empty strings
+            try:
+                price = float(last_price) if last_price else None
+                volume_24h = float(quote_volume) if quote_volume else None
+                change24h = float(price_change_percent) if price_change_percent else None
+            except (ValueError, TypeError):
+                logger.debug(f"Failed to convert ticker values for {symbol}: price={last_price}, volume={quote_volume}, change={price_change_percent}")
+                return None
+            
+            if price is None or price <= 0:
+                return None
+            
+            return {
+                "symbol": symbol,
+                "price": price,
+                "volume_24h": volume_24h,
+                "change24h": change24h
+            }
+        except Exception as e:
+            logger.debug(f"Error parsing ticker message: {e}")
             return None
     
     async def flush_batch(self, db: Session) -> Tuple[int, int]:
@@ -395,19 +458,24 @@ class BinanceWebSocketService:
                 logger.warning(f"Timeframe {tf} (mapped to {mapped}) may not be supported by Binance")
         
         # Use multi-stream URL if we have multiple streams
-        if len(symbols) * len(timeframes) > 1:
+        # Note: We always use multi-stream when we have ticker streams (which is always now)
+        if len(symbols) * len(timeframes) > 1 or len(symbols) > 1:
             url = self.build_multi_stream_url(symbols, timeframes)
-            total_streams = len(symbols) * len(timeframes)
+            total_kline_streams = len(symbols) * len(timeframes)
+            total_ticker_streams = len(symbols)
+            total_streams = total_kline_streams + total_ticker_streams
             logger.info(
-                f"Connecting to multi-stream WebSocket: {len(symbols)} symbols x {len(timeframes)} timeframes = {total_streams} streams"
+                f"Connecting to multi-stream WebSocket: {len(symbols)} symbols x {len(timeframes)} timeframes = {total_kline_streams} kline streams + {total_ticker_streams} ticker streams = {total_streams} total streams"
             )
         else:
-            # Single stream
+            # Single stream (kline only, but we still want ticker)
+            # For single symbol/timeframe, we'll use multi-stream to include ticker
             symbol = symbols[0] if symbols else ""
             timeframe = timeframes[0] if timeframes else ""
-            stream_name = self.build_stream_name(symbol, timeframe)
-            url = f"{self.ws_url}/{stream_name}"
-            logger.info(f"Connecting to single-stream WebSocket: {stream_name}")
+            kline_stream = self.build_stream_name(symbol, timeframe)
+            ticker_stream = self.build_ticker_stream_name(symbol)
+            url = f"{self.ws_stream_url}?streams={kline_stream}/{ticker_stream}"
+            logger.info(f"Connecting to multi-stream WebSocket: {kline_stream} + {ticker_stream}")
         
         try:
             # Connect with timeout
@@ -523,6 +591,24 @@ class BinanceWebSocketService:
                         logger.error(f"Failed to parse JSON message: {e}, message: {message_str[:200]}")
                         continue
                     
+                    # Check if this is a ticker message (for real-time price/volume updates)
+                    ticker_data = self.parse_ticker_message(message)
+                    if ticker_data:
+                        try:
+                            # Publish real-time price/volume update
+                            publish_event("symbol_update", {
+                                "symbol": ticker_data.get("symbol"),
+                                "price": ticker_data.get("price"),
+                                "volume_24h": ticker_data.get("volume_24h"),
+                                "change24h": ticker_data.get("change24h"),
+                                "timestamp": datetime.now(timezone.utc).isoformat()
+                            })
+                        except Exception as e:
+                            logger.debug(f"Failed to publish ticker update for {ticker_data.get('symbol')}: {e}")
+                        # Continue processing (ticker messages don't need database operations)
+                        continue
+                    
+                    # Check if this is a kline message (for candle data)
                     kline_data = self.parse_kline_message(message)
                     
                     if kline_data:

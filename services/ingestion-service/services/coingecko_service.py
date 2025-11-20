@@ -106,8 +106,31 @@ class CoinGeckoIngestionService:
         """Get or create symbol_id for a given symbol with optional image path"""
         return get_or_create_symbol_record(db, symbol, image_path=image_path)
     
-    async def save_market_metrics(self, db: Session, coins_data: List[Dict], binance_service: Optional[BinanceIngestionService] = None):
-        """Save market metrics to database, using Binance ticker for price and volume_24h data"""
+    def get_symbol_id(self, db: Session, symbol: str) -> Optional[int]:
+        """Get symbol_id for an existing symbol only (does not create new symbols)"""
+        try:
+            result = db.execute(
+                text("SELECT symbol_id FROM symbols WHERE symbol_name = :symbol"),
+                {"symbol": symbol}
+            ).scalar()
+            return result
+        except Exception as e:
+            logger.error(f"Error getting symbol_id for {symbol}: {e}")
+            return None
+    
+    async def save_market_metrics(
+        self, 
+        db: Session, 
+        coins_data: List[Dict], 
+        binance_service: Optional[BinanceIngestionService] = None,
+        create_symbols: bool = True
+    ):
+        """Save market metrics to database, using Binance ticker for price and volume_24h data
+        
+        Args:
+            create_symbols: If True, creates new symbols if they don't exist.
+                           If False, only updates existing symbols (skips new ones).
+        """
         try:
             saved_count = 0
             skipped_count = 0
@@ -130,12 +153,19 @@ class CoinGeckoIngestionService:
                     # Extract image path from CoinGecko data
                     image_path = coin.get("image")
                     
-                    # Get or create symbol_id with image path
-                    symbol_id = self.get_or_create_symbol_id(db, symbol, image_path=image_path)
-                    if not symbol_id:
-                        logger.warning(f"Could not get/create symbol_id for {symbol}")
-                        skipped_count += 1
-                        continue
+                    # Get symbol_id - create if allowed, otherwise only get existing
+                    if create_symbols:
+                        symbol_id = self.get_or_create_symbol_id(db, symbol, image_path=image_path)
+                        if not symbol_id:
+                            logger.warning(f"Could not get/create symbol_id for {symbol}")
+                            skipped_count += 1
+                            continue
+                    else:
+                        # Only update existing symbols, skip new ones
+                        symbol_id = self.get_symbol_id(db, symbol)
+                        if not symbol_id:
+                            skipped_count += 1
+                            continue  # Skip symbols that don't exist
                     
                     # Extract market data from CoinGecko
                     market_cap = coin.get("market_cap")
@@ -183,6 +213,20 @@ class CoinGeckoIngestionService:
                         "price": float(price) if price else None
                     })
                     saved_count += 1
+                    
+                    # Publish marketcap_update event for real-time market cap and volume updates
+                    # Note: Price is excluded - it comes from real-time Binance ticker streams
+                    # Only market_cap and volume_24h are updated from periodic CoinGecko updates
+                    try:
+                        publish_event("marketcap_update", {
+                            "symbol": symbol,
+                            "marketcap": float(market_cap) if market_cap else None,
+                            "volume_24h": float(volume_24h) if volume_24h else None,
+                            # Price is NOT included - comes from real-time Binance WebSocket ticker streams
+                            "timestamp": current_timestamp.isoformat()
+                        })
+                    except Exception as e:
+                        logger.debug(f"Failed to publish marketcap_update event for {symbol}: {e}")
                     
                 except Exception as e:
                     logger.error(f"Error saving market data for {coin.get('id', 'unknown')}: {e}")
@@ -260,8 +304,8 @@ class CoinGeckoIngestionService:
             return []
     
     async def update_market_data_for_symbols(self, symbols: List[str], binance_service: Optional[BinanceIngestionService] = None):
-        """Update market data (price, market_cap, volume_24h) for existing symbols"""
-        logger.info(f"Updating market data for {len(symbols)} symbols")
+        """Update market data (price, market_cap, volume_24h) for existing symbols only"""
+        logger.info(f"Updating market data for {len(symbols)} existing symbols")
         
         # Fetch market data from CoinGecko
         coins_data = await self.fetch_market_data_by_symbols(symbols)
@@ -269,9 +313,14 @@ class CoinGeckoIngestionService:
             logger.warning("No market data fetched from CoinGecko")
             return
         
-        # Update database
+        # Update database (create_symbols=False means only update existing symbols)
         with DatabaseManager() as db:
-            await self.save_market_metrics(db, coins_data, binance_service=binance_service)
+            await self.save_market_metrics(
+                db, 
+                coins_data, 
+                binance_service=binance_service,
+                create_symbols=False  # Only update existing symbols, don't create new ones
+            )
             logger.info(f"Successfully updated market data for {len(coins_data)} symbols")
     
     async def ingest_top_market_metrics(self, limit: int = 200, binance_service: Optional[BinanceIngestionService] = None):

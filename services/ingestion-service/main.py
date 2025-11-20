@@ -59,12 +59,12 @@ from utils.gap_detection import backfill_all_symbols_timeframes
 shutdown_event = asyncio.Event()
 
 
-async def hourly_market_data_update():
-    """Background task to update market data every hour with metrics"""
-    logger.info("hourly_market_data_update_started")
+async def periodic_market_data_update():
+    """Background task to update market data every 5 minutes with metrics"""
+    logger.info("periodic_market_data_update_started")
     while True:
         try:            
-            await asyncio.sleep(3600)  # Wait 1 hour
+            await asyncio.sleep(300)  # Wait 5 minutes
             
             start_time = datetime.now()
             
@@ -81,7 +81,7 @@ async def hourly_market_data_update():
                 symbols = [row[0] for row in result]
             
             if symbols:
-                logger.info("hourly_market_data_update_starting", symbol_count=len(symbols))
+                logger.info("periodic_market_data_update_starting", symbol_count=len(symbols))
                 # Create service instances for this update
                 async with BinanceIngestionService() as binance_service:
                     async with CoinGeckoIngestionService() as coingecko_service:
@@ -94,20 +94,20 @@ async def hourly_market_data_update():
                 symbols_per_second = len(symbols) / duration if duration > 0 else 0
                 
                 logger.info(
-                    "hourly_market_data_update_completed",
+                    "periodic_market_data_update_completed",
                     symbol_count=len(symbols),
                     duration_seconds=duration,
                     symbols_per_second=symbols_per_second
                 )
             else:
-                logger.warning("hourly_market_data_update_no_symbols")
+                logger.warning("periodic_market_data_update_no_symbols")
 
         except asyncio.CancelledError:
-            logger.info("hourly_market_data_update_cancelled")
+            logger.info("periodic_market_data_update_cancelled")
             break
         except Exception as e:
             logger.error(
-                "hourly_market_data_update_error",
+                "periodic_market_data_update_error",
                 error=str(e),
                 exc_info=True
             )
@@ -179,9 +179,9 @@ async def main():
             )
             logger.info("coingecko_market_metrics_ingestion_completed")
     
-    # Start hourly market data update task (runs independently)
-    update_task = asyncio.create_task(hourly_market_data_update())
-    logger.info("hourly_market_data_update_task_started")
+    # Start periodic market data update task (runs every 5 minutes, independently)
+    update_task = asyncio.create_task(periodic_market_data_update())
+    logger.info("periodic_market_data_update_task_started")
     
     try:
         # Get qualified symbols and timeframes from database

@@ -173,6 +173,60 @@ class ConnectionManager:
         
         logger.debug(f"Broadcasted candle update for {symbol} {timeframe} to {clients_notified} clients")
     
+    async def broadcast_symbol_update(self, symbol_data: dict):
+        """Broadcast symbol update to all connected clients - sends ticker data directly without DB query"""
+        symbol = symbol_data.get("symbol")
+        
+        if not symbol:
+            logger.warning(f"Symbol update missing symbol: {symbol_data}")
+            return
+        
+        # Parse base/quote from symbol name if not present (e.g., "BTCUSDT" -> base: "BTC", quote: "USDT")
+        if "base" not in symbol_data or "quote" not in symbol_data:
+            symbol_str = symbol.upper()
+            # Common quote assets to check
+            quote_assets = ["USDT", "USDC", "BUSD", "BTC", "ETH", "BNB", "USD", "EUR", "GBP", "TRY"]
+            for quote in quote_assets:
+                if symbol_str.endswith(quote):
+                    symbol_data["base"] = symbol_str[:-len(quote)]
+                    symbol_data["quote"] = quote
+                    break
+            else:
+                # Fallback: use entire symbol as base, default to USDT
+                symbol_data["base"] = symbol_str
+                symbol_data["quote"] = "USDT"
+        
+        # Broadcast directly - ticker event already contains: symbol, price, volume_24h, change24h
+        # No need to query database which would be slow and potentially return stale data
+        clients_notified = 0
+        for ws_id in self.active_connections.keys():
+            await self.send_personal_message(ws_id, {
+                "type": "symbol_update",
+                "data": symbol_data
+            })
+            clients_notified += 1
+        
+        logger.debug(f"Broadcasted symbol update for {symbol} to {clients_notified} clients")
+    
+    async def broadcast_marketcap_update(self, marketcap_data: dict):
+        """Broadcast market cap update to all connected clients"""
+        symbol = marketcap_data.get("symbol")
+        
+        if not symbol:
+            logger.warning(f"Market cap update missing symbol: {marketcap_data}")
+            return
+        
+        clients_notified = 0
+        # Broadcast to all connected clients
+        for ws_id in self.active_connections.keys():
+            await self.send_personal_message(ws_id, {
+                "type": "marketcap_update",
+                "data": marketcap_data
+            })
+            clients_notified += 1
+        
+        logger.debug(f"Broadcasted market cap update for {symbol} to {clients_notified} clients")
+    
     async def start_redis_listener(self):
         """Start listening to Redis pub/sub for candle updates"""
         redis_client = get_redis()
@@ -183,9 +237,9 @@ class ConnectionManager:
         async def listen():
             """Listen for Redis pub/sub messages"""
             pubsub = redis_client.pubsub()
-            pubsub.subscribe("candle_update")
+            pubsub.subscribe("candle_update", "symbol_update", "marketcap_update")
             
-            logger.info("Redis listener started for candle updates")
+            logger.info("Redis listener started for candle, symbol, and marketcap updates")
             
             while True:
                 try:
@@ -198,31 +252,48 @@ class ConnectionManager:
                     
                     if message and message.get("type") == "message":
                         try:
-                            data = json.loads(message["data"])
-                            logger.debug(f"Received candle_update event: {data.get('symbol')} {data.get('timeframe')}")
-                            
-                            # If full candle data is already in the message, use it
-                            if all(key in data for key in ["symbol", "timeframe", "timestamp", "open", "high", "low", "close", "volume"]):
-                                logger.debug(f"Broadcasting full candle data for {data.get('symbol')} {data.get('timeframe')}")
-                                await self.broadcast_candle_update(data)
+                            # Get channel name - handle both bytes and string
+                            channel_raw = message.get("channel")
+                            if isinstance(channel_raw, bytes):
+                                channel = channel_raw.decode("utf-8")
                             else:
-                                # Otherwise, fetch from database
-                                symbol = data.get("symbol")
-                                timeframe = data.get("timeframe")
-                                if symbol and timeframe:
-                                    logger.debug(f"Fetching candle from DB for {symbol} {timeframe}")
-                                    with StorageService() as storage:
-                                        candles = storage.get_latest_candles(
-                                            symbol,
-                                            timeframe,
-                                            limit=1
-                                        )
-                                        if candles:
-                                            await self.broadcast_candle_update(candles[0])
+                                channel = str(channel_raw) if channel_raw else ""
+                            
+                            data = json.loads(message["data"])
+                            
+                            if channel == "candle_update":
+                                logger.debug(f"Received candle_update event: {data.get('symbol')} {data.get('timeframe')}")
+                                
+                                # If full candle data is already in the message, use it
+                                if all(key in data for key in ["symbol", "timeframe", "timestamp", "open", "high", "low", "close", "volume"]):
+                                    logger.debug(f"Broadcasting full candle data for {data.get('symbol')} {data.get('timeframe')}")
+                                    await self.broadcast_candle_update(data)
+                                else:
+                                    # Otherwise, fetch from database
+                                    symbol = data.get("symbol")
+                                    timeframe = data.get("timeframe")
+                                    if symbol and timeframe:
+                                        logger.debug(f"Fetching candle from DB for {symbol} {timeframe}")
+                                        with StorageService() as storage:
+                                            candles = storage.get_latest_candles(
+                                                symbol,
+                                                timeframe,
+                                                limit=1
+                                            )
+                                            if candles:
+                                                await self.broadcast_candle_update(candles[0])
+                            
+                            elif channel == "symbol_update":
+                                await self.broadcast_symbol_update(data)
+                            elif channel == "marketcap_update":
+                                await self.broadcast_marketcap_update(data)
+                            else:
+                                logger.debug(f"Received message on unknown channel: {channel}")
+                                
                         except json.JSONDecodeError as e:
                             logger.error(f"Error parsing Redis message: {e}")
                         except Exception as e:
-                            logger.error(f"Error processing candle update: {e}", exc_info=True)
+                            logger.error(f"Error processing update: {e}", exc_info=True)
                 except Exception as e:
                     logger.error(f"Error in Redis listener: {e}")
                     await asyncio.sleep(1)
