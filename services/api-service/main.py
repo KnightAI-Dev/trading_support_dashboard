@@ -257,6 +257,18 @@ async def get_swings(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/symbols")
+async def get_symbols(db: Session = Depends(get_db)):
+    """Get all symbols with latest prices and 24h change"""
+    try:
+        with StorageService() as storage:
+            symbols = storage.get_symbols_with_prices()
+            return symbols
+    except Exception as e:
+        logger.error(f"Error getting symbols: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

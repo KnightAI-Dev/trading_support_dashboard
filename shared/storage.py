@@ -454,6 +454,83 @@ class StorageService:
                 },
             }
 
+    def get_symbols_with_prices(self) -> List[Dict]:
+        """Get all symbols with latest prices and 24h change from database"""
+        try:
+            # Get all unique symbols from ohlcv_candles
+            # For each symbol, get latest close price and close price from 24h ago
+            query = text("""
+                WITH latest_prices AS (
+                    SELECT DISTINCT ON (s.symbol_name)
+                        s.symbol_name as symbol,
+                        oc.close as current_price,
+                        oc.timestamp as current_timestamp
+                    FROM ohlcv_candles oc
+                    INNER JOIN symbols s ON oc.symbol_id = s.symbol_id
+                    INNER JOIN timeframe t ON oc.timeframe_id = t.timeframe_id
+                    WHERE t.tf_name = '1h'  -- Use 1h timeframe for price data
+                    ORDER BY s.symbol_name, oc.timestamp DESC
+                ),
+                prices_24h_ago AS (
+                    SELECT DISTINCT ON (s.symbol_name)
+                        s.symbol_name as symbol,
+                        oc.close as price_24h_ago
+                    FROM ohlcv_candles oc
+                    INNER JOIN symbols s ON oc.symbol_id = s.symbol_id
+                    INNER JOIN timeframe t ON oc.timeframe_id = t.timeframe_id
+                    WHERE t.tf_name = '1h'
+                    AND oc.timestamp <= NOW() - INTERVAL '24 hours'
+                    ORDER BY s.symbol_name, oc.timestamp DESC
+                )
+                SELECT 
+                    lp.symbol,
+                    s.base_asset as base,
+                    s.quote_asset as quote,
+                    COALESCE(md.market_cap, 0) as marketcap,
+                    COALESCE(lp.current_price, 0) as price,
+                    CASE 
+                        WHEN p24.price_24h_ago > 0 THEN 
+                            ((lp.current_price - p24.price_24h_ago) / p24.price_24h_ago) * 100
+                        ELSE 0
+                    END as change24h
+                FROM latest_prices lp
+                INNER JOIN symbols s ON lp.symbol = s.symbol_name
+                LEFT JOIN prices_24h_ago p24 ON lp.symbol = p24.symbol
+                LEFT JOIN LATERAL (
+                    SELECT market_cap
+                    FROM market_data md2
+                    WHERE md2.symbol_id = s.symbol_id
+                    ORDER BY md2.timestamp DESC
+                    LIMIT 1
+                ) md ON true
+                ORDER BY lp.symbol
+            """)
+            
+            result = self.db.execute(query)
+            rows = result.fetchall()
+            
+            symbols = []
+            for row in rows:
+                # Parse symbol to get base and quote if not available
+                symbol = row[0]
+                base = row[1] if row[1] else symbol.replace("USDT", "").replace("USD", "")
+                quote = row[2] if row[2] else "USDT"
+                
+                symbols.append({
+                    "symbol": symbol,
+                    "base": base,
+                    "quote": quote,
+                    "marketcap": float(row[3]) if row[3] else 0,
+                    "price": float(row[4]) if row[4] else 0,
+                    "change24h": float(row[5]) if row[5] is not None else 0,
+                })
+            
+            logger.debug(f"Retrieved {len(symbols)} symbols with price data")
+            return symbols
+        except Exception as e:
+            logger.error(f"Error getting symbols with prices: {e}")
+            return []
+
 
 def save_signal(signal_data: Dict) -> Optional[TradingSignal]:
     """Save trading signal - convenience function"""
