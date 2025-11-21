@@ -7,6 +7,7 @@ import {
   ISeriesApi,
   Time,
   CandlestickData,
+  HistogramData,
   ColorType,
 } from "lightweight-charts";
 import { useMarketStore } from "@/stores/useMarketStore";
@@ -29,6 +30,7 @@ export function ChartContainer({
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const [containerWidth, setContainerWidth] = useState(width || 800);
   const [oldestLoadedTime, setOldestLoadedTime] = useState<number | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -82,8 +84,30 @@ export function ChartContainer({
       wickDownColor: "#ef4444",
     });
 
+    // Add volume histogram series below candlesticks
+    const volumeSeries = chart.addHistogramSeries({
+      color: "#26a69a",
+      priceFormat: {
+        type: "volume",
+      },
+      priceScaleId: "", // Use separate price scale
+      // Make volume bars less prominent
+      baseLineVisible: false,
+      priceLineVisible: false,
+      lastValueVisible: false,
+    });
+
+    // Configure the volume price scale to make it small and position it at the bottom
+    volumeSeries.priceScale().applyOptions({
+      scaleMargins: {
+        top: 0.9, // Make volume chart very small (96% top margin = volume takes ~4% of space)
+        bottom: 0.01, // Minimal bottom margin to keep it at the bottom
+      },
+    });
+
     chartRef.current = chart;
     seriesRef.current = candlestickSeries;
+    volumeSeriesRef.current = volumeSeries;
 
     // Handle resize
     const handleResize = () => {
@@ -259,17 +283,32 @@ export function ChartContainer({
 
     if (isInitialLoad || symbolChanged) {
       // Full data replacement for initial load or symbol/timeframe change
-      const chartData: CandlestickData[] = filteredCandles
-        .map((candle) => ({
-          time: (new Date(candle.timestamp).getTime() / 1000) as Time,
-          open: candle.open,
-          high: candle.high,
-          low: candle.low,
-          close: candle.close,
-        }))
-        .sort((a, b) => (a.time as number) - (b.time as number)); // Sort ascending by time
+      const sortedCandles = [...filteredCandles].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
 
-      seriesRef.current.setData(chartData);
+      const chartData: CandlestickData[] = sortedCandles.map((candle) => ({
+        time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+      }));
+
+      // Volume data with color based on candle direction (green for up, red for down)
+      // Using lower opacity colors to make volume less prominent
+      const volumeData: HistogramData[] = sortedCandles.map((candle) => ({
+        time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+        value: candle.volume,
+        color: candle.close >= candle.open ? "#10b98180" : "#ef444480", // Green/red with 50% opacity
+      }));
+
+      if (seriesRef.current) {
+        seriesRef.current.setData(chartData);
+      }
+      if (volumeSeriesRef.current) {
+        volumeSeriesRef.current.setData(volumeData);
+      }
 
       // Update oldest loaded time if we have new data
       if (chartData.length > 0) {
@@ -295,12 +334,13 @@ export function ChartContainer({
       // Find new or updated candles
       const newOrUpdatedCandles = filteredCandles.filter(c => {
         const prev = prevMap.get(c.timestamp);
-        // New candle or price changed (for real-time updates)
+        // New candle or price/volume changed (for real-time updates)
         return !prev || 
                prev.open !== c.open || 
                prev.high !== c.high || 
                prev.low !== c.low || 
-               prev.close !== c.close;
+               prev.close !== c.close ||
+               prev.volume !== c.volume;
       });
 
       // Check if we have any candles older than the oldest loaded time
@@ -312,18 +352,29 @@ export function ChartContainer({
 
       if (hasOlderData) {
         // Rebuild entire dataset with all candles sorted by time
-        const chartData: CandlestickData[] = filteredCandles
-          .map((candle) => ({
-            time: (new Date(candle.timestamp).getTime() / 1000) as Time,
-            open: candle.open,
-            high: candle.high,
-            low: candle.low,
-            close: candle.close,
-          }))
-          .sort((a, b) => (a.time as number) - (b.time as number));
+        const sortedCandles = [...filteredCandles].sort(
+          (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+        );
+
+        const chartData: CandlestickData[] = sortedCandles.map((candle) => ({
+          time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+          open: candle.open,
+          high: candle.high,
+          low: candle.low,
+          close: candle.close,
+        }));
+
+        const volumeData: HistogramData[] = sortedCandles.map((candle) => ({
+          time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+          value: candle.volume,
+          color: candle.close >= candle.open ? "#10b98180" : "#ef444480", // 50% opacity
+        }));
 
         if (seriesRef.current) {
           seriesRef.current.setData(chartData);
+        }
+        if (volumeSeriesRef.current) {
+          volumeSeriesRef.current.setData(volumeData);
         }
 
         // Update oldest loaded time
@@ -337,10 +388,13 @@ export function ChartContainer({
         let rebuildNeeded = false;
         
         for (const candle of newOrUpdatedCandles) {
+          const candleTime = (new Date(candle.timestamp).getTime() / 1000) as Time;
+          
+          // Update candlestick data
           if (seriesRef.current) {
             try {
               seriesRef.current.update({
-                time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+                time: candleTime,
                 open: candle.open,
                 high: candle.high,
                 low: candle.low,
@@ -353,22 +407,49 @@ export function ChartContainer({
               break; // Exit loop - we'll rebuild everything
             }
           }
+
+          // Update volume data
+          if (volumeSeriesRef.current) {
+            try {
+              volumeSeriesRef.current.update({
+                time: candleTime,
+                value: candle.volume,
+                color: candle.close >= candle.open ? "#10b98180" : "#ef444480", // 50% opacity
+              });
+            } catch (error) {
+              // If volume update fails, mark for rebuild
+              console.warn("Volume update failed, will rebuild:", error);
+              rebuildNeeded = true;
+              break;
+            }
+          }
         }
 
         // If update failed, rebuild entire dataset
         if (rebuildNeeded) {
-          const chartData: CandlestickData[] = filteredCandles
-            .map((c) => ({
-              time: (new Date(c.timestamp).getTime() / 1000) as Time,
-              open: c.open,
-              high: c.high,
-              low: c.low,
-              close: c.close,
-            }))
-            .sort((a, b) => (a.time as number) - (b.time as number));
+          const sortedCandles = [...filteredCandles].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+
+          const chartData: CandlestickData[] = sortedCandles.map((c) => ({
+            time: (new Date(c.timestamp).getTime() / 1000) as Time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+          }));
+
+          const volumeData: HistogramData[] = sortedCandles.map((c) => ({
+            time: (new Date(c.timestamp).getTime() / 1000) as Time,
+            value: c.volume,
+            color: c.close >= c.open ? "#10b98180" : "#ef444480", // 50% opacity
+          }));
           
           if (seriesRef.current) {
             seriesRef.current.setData(chartData);
+          }
+          if (volumeSeriesRef.current) {
+            volumeSeriesRef.current.setData(volumeData);
           }
           
           if (chartData.length > 0) {
