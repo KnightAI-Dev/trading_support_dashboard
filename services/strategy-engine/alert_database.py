@@ -2,81 +2,86 @@
 Database Manager for Trading Alerts
 
 This module handles all database operations for storing and retrieving trading alerts.
-It checks for duplicate swing high/low pairs and tracks candle timestamps to detect new candles.
+It uses PostgreSQL and stores alerts in the strategy_alerts table.
 """
 
-import sqlite3
+import sys
 import os
 from typing import List, Dict, Optional, Tuple
+from datetime import datetime
+from sqlalchemy import text
+
+# Add shared to path
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
+
+from shared.database import SessionLocal
+from shared.logger import setup_logger
+
+logger = setup_logger(__name__)
 
 
 class AlertDatabase:
     """
     Manages database operations for trading alerts.
     Handles storage, retrieval, and duplicate detection for swing high/low pairs.
+    Uses PostgreSQL with the strategy_alerts table.
     """
     
-    def __init__(self, db_path: str = "trading_alerts.db"):
-        """
-        Initialize the database manager.
-        
-        Args:
-            db_path: Path to the SQLite database file (default: "trading_alerts.db")
-        """
-        self.db_path = db_path
-        self._init_database()
+    def __init__(self):
+        """Initialize the database manager."""
+        self._init_candle_timestamps_table()
     
-    def _init_database(self):
-        """
-        Initialize the database and create tables if they don't exist.
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Create alerts table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                asset TEXT NOT NULL,
-                timeframe TEXT NOT NULL,
-                alert_type TEXT NOT NULL,
-                swing_low_idx INTEGER NOT NULL,
-                swing_low_price REAL NOT NULL,
-                swing_high_idx INTEGER NOT NULL,
-                swing_high_price REAL NOT NULL,
-                current_price REAL NOT NULL,
-                entry_level REAL NOT NULL,
-                sl REAL NOT NULL,
-                tp1 REAL NOT NULL,
-                tp2 REAL NOT NULL,
-                tp3 REAL NOT NULL,
-                approaching REAL NOT NULL,
-                risk_score TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(asset, timeframe, swing_low_idx, swing_low_price, swing_high_idx, swing_high_price)
+    def _init_candle_timestamps_table(self):
+        """Initialize the candle_timestamps table if it doesn't exist."""
+        try:
+            db = SessionLocal()
+            try:
+                db.execute(text("""
+                    CREATE TABLE IF NOT EXISTS candle_timestamps (
+                        id SERIAL PRIMARY KEY,
+                        symbol_id INTEGER NOT NULL,
+                        timeframe_id INTEGER NOT NULL,
+                        last_candle_timestamp BIGINT NOT NULL,
+                        updated_at TIMESTAMPTZ DEFAULT NOW(),
+                        UNIQUE(symbol_id, timeframe_id),
+                        FOREIGN KEY (symbol_id) REFERENCES symbols(symbol_id),
+                        FOREIGN KEY (timeframe_id) REFERENCES timeframe(timeframe_id)
+                    )
+                """))
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"Table candle_timestamps may already exist: {e}")
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Error initializing candle_timestamps table: {e}")
+    
+    def _get_symbol_id(self, db, symbol: str) -> Optional[int]:
+        """Get symbol_id from symbol name."""
+        try:
+            result = db.execute(
+                text("SELECT symbol_id FROM symbols WHERE symbol_name = :symbol"),
+                {"symbol": symbol}
             )
-        ''')
-        
-        # Create index for faster lookups
-        cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_swing_pair 
-            ON alerts(asset, timeframe, swing_low_idx, swing_low_price, swing_high_idx, swing_high_price)
-        ''')
-        
-        # Create table to track last processed candle timestamps
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS candle_timestamps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                asset TEXT NOT NULL,
-                timeframe TEXT NOT NULL,
-                last_candle_timestamp INTEGER NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(asset, timeframe)
+            row = result.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Error getting symbol_id for {symbol}: {e}")
+            return None
+    
+    def _get_timeframe_id(self, db, timeframe: str) -> Optional[int]:
+        """Get timeframe_id from timeframe name."""
+        try:
+            result = db.execute(
+                text("SELECT timeframe_id FROM timeframe WHERE tf_name = :timeframe"),
+                {"timeframe": timeframe}
             )
-        ''')
-        
-        conn.commit()
-        conn.close()
+            row = result.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Error getting timeframe_id for {timeframe}: {e}")
+            return None
     
     def swing_pair_exists(self, asset: str, timeframe: str, swing_low: Tuple, swing_high: Tuple) -> bool:
         """
@@ -95,28 +100,46 @@ class AlertDatabase:
             return False
         
         try:
-            low_idx, low_price = swing_low[0], swing_low[1]
-            high_idx, high_price = swing_high[0], swing_high[1]
+            low_price = swing_low[1]
+            high_price = swing_high[1]
         except (IndexError, TypeError):
             return False
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            SELECT COUNT(*) FROM alerts
-            WHERE asset = ? 
-            AND timeframe = ?
-            AND swing_low_idx = ?
-            AND ABS(swing_low_price - ?) < 0.01
-            AND swing_high_idx = ?
-            AND ABS(swing_high_price - ?) < 0.01
-        ''', (asset, timeframe, int(low_idx), float(low_price), int(high_idx), float(high_price)))
-        
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return count > 0
+        db = SessionLocal()
+        try:
+            symbol_id = self._get_symbol_id(db, asset)
+            timeframe_id = self._get_timeframe_id(db, timeframe)
+            
+            if not symbol_id or not timeframe_id:
+                return False
+            
+            result = db.execute(
+                text("""
+                    SELECT COUNT(*) FROM strategy_alerts
+                    WHERE symbol_id = :symbol_id
+                    AND timeframe_id = :timeframe_id
+                    AND ABS(swing_low_price - :low_price) < 0.01
+                    AND ABS(swing_high_price - :high_price) < 0.01
+                """),
+                {
+                    "symbol_id": symbol_id,
+                    "timeframe_id": timeframe_id,
+                    "low_price": float(low_price),
+                    "high_price": float(high_price)
+                }
+            )
+            
+            count = result.fetchone()[0]
+            return count > 0
+        except Exception as e:
+            logger.error(f"Error checking swing pair existence: {e}")
+            return False
+        finally:
+            db.close()
+    
+    def _unix_to_timestamp(self, unix_timestamp: int) -> datetime:
+        """Convert Unix timestamp to datetime."""
+        return datetime.fromtimestamp(unix_timestamp)
     
     def save_alerts(self, alerts: List[Dict], asset_symbol: str) -> Dict[str, int]:
         """
@@ -136,65 +159,110 @@ class AlertDatabase:
         skipped_count = 0
         error_count = 0
         
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        for alert in alerts:
-            try:
-                timeframe = alert.get('timeframe', 'unknown')
-                swing_low = alert.get('swing_low')
-                swing_high = alert.get('swing_high')
-                
-                # Check if pair already exists
-                if self.swing_pair_exists(asset_symbol, timeframe, swing_low, swing_high):
-                    skipped_count += 1
-                    continue
-                
-                # Extract swing low/high data
-                if swing_low is None or swing_high is None:
+        db = SessionLocal()
+        try:
+            symbol_id = self._get_symbol_id(db, asset_symbol)
+            if not symbol_id:
+                logger.error(f"Symbol {asset_symbol} not found in database")
+                return {'saved': 0, 'skipped': 0, 'errors': len(alerts)}
+            
+            for alert in alerts:
+                try:
+                    timeframe = alert.get('timeframe', 'unknown')
+                    swing_low = alert.get('swing_low')
+                    swing_high = alert.get('swing_high')
+                    
+                    # Check if pair already exists
+                    if self.swing_pair_exists(asset_symbol, timeframe, swing_low, swing_high):
+                        skipped_count += 1
+                        continue
+                    
+                    # Extract swing low/high data
+                    if swing_low is None or swing_high is None:
+                        error_count += 1
+                        continue
+                    
+                    low_price = swing_low[1]
+                    high_price = swing_high[1]
+                    
+                    # Get swing timestamps from alert or use current timestamp
+                    # The alert should contain timestamps, but if not, use current time
+                    swing_low_timestamp = alert.get('swing_low_timestamp')
+                    swing_high_timestamp = alert.get('swing_high_timestamp')
+                    
+                    # If timestamps are in unix format, convert them
+                    if isinstance(swing_low_timestamp, (int, float)):
+                        swing_low_timestamp = self._unix_to_timestamp(int(swing_low_timestamp))
+                    elif swing_low_timestamp is None:
+                        swing_low_timestamp = datetime.now()
+                    
+                    if isinstance(swing_high_timestamp, (int, float)):
+                        swing_high_timestamp = self._unix_to_timestamp(int(swing_high_timestamp))
+                    elif swing_high_timestamp is None:
+                        swing_high_timestamp = datetime.now()
+                    
+                    timeframe_id = self._get_timeframe_id(db, timeframe)
+                    if not timeframe_id:
+                        logger.warning(f"Timeframe {timeframe} not found, skipping alert")
+                        error_count += 1
+                        continue
+                    
+                    # Get alert timestamp (when the alert was generated)
+                    alert_timestamp = alert.get('timestamp')
+                    if isinstance(alert_timestamp, (int, float)):
+                        alert_timestamp = self._unix_to_timestamp(int(alert_timestamp))
+                    elif alert_timestamp is None:
+                        alert_timestamp = datetime.now()
+                    
+                    # Insert alert
+                    db.execute(
+                        text("""
+                            INSERT INTO strategy_alerts (
+                                symbol_id, timeframe_id, timestamp,
+                                entry_price, stop_loss, take_profit_1, take_profit_2, take_profit_3,
+                                risk_score, swing_low_price, swing_low_timestamp,
+                                swing_high_price, swing_high_timestamp, direction
+                            ) VALUES (
+                                :symbol_id, :timeframe_id, :timestamp,
+                                :entry_price, :stop_loss, :take_profit_1, :take_profit_2, :take_profit_3,
+                                :risk_score, :swing_low_price, :swing_low_timestamp,
+                                :swing_high_price, :swing_high_timestamp, :direction
+                            )
+                            ON CONFLICT (symbol_id, timeframe_id, swing_low_price, swing_high_price, timestamp)
+                            DO NOTHING
+                        """),
+                        {
+                            "symbol_id": symbol_id,
+                            "timeframe_id": timeframe_id,
+                            "timestamp": alert_timestamp,
+                            "entry_price": float(alert.get('entry_level', 0)),
+                            "stop_loss": float(alert.get('sl', 0)),
+                            "take_profit_1": float(alert.get('tp1', 0)),
+                            "take_profit_2": float(alert.get('tp2')) if alert.get('tp2') is not None else None,
+                            "take_profit_3": float(alert.get('tp3')) if alert.get('tp3') is not None else None,
+                            "risk_score": str(alert.get('risk_score', 'none')),
+                            "swing_low_price": float(low_price),
+                            "swing_low_timestamp": swing_low_timestamp,
+                            "swing_high_price": float(high_price),
+                            "swing_high_timestamp": swing_high_timestamp,
+                            "direction": alert.get('trend_type')  # 'long' or 'short'
+                        }
+                    )
+                    
+                    saved_count += 1
+                    
+                except Exception as e:
                     error_count += 1
+                    logger.error(f"Error saving alert to database: {e}")
                     continue
-                
-                low_idx, low_price = swing_low[0], swing_low[1]
-                high_idx, high_price = swing_high[0], swing_high[1]
-                
-                # Insert alert
-                cursor.execute('''
-                    INSERT INTO alerts (
-                        asset, timeframe, alert_type,
-                        swing_low_idx, swing_low_price,
-                        swing_high_idx, swing_high_price,
-                        current_price, entry_level,
-                        sl, tp1, tp2, tp3,
-                        approaching, risk_score
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    asset_symbol,
-                    timeframe,
-                    alert.get('type', 'unknown'),
-                    int(low_idx),
-                    float(low_price),
-                    int(high_idx),
-                    float(high_price),
-                    float(alert.get('current_price', 0)),
-                    float(alert.get('entry_level', 0)),
-                    float(alert.get('sl', 0)),
-                    float(alert.get('tp1', 0)),
-                    float(alert.get('tp2', 0)),
-                    float(alert.get('tp3', 0)),
-                    float(alert.get('approaching', 0)),
-                    str(alert.get('risk_score', 'none'))
-                ))
-                
-                saved_count += 1
-                
-            except Exception as e:
-                error_count += 1
-                print(f"Error saving alert to database: {e}")
-                continue
-        
-        conn.commit()
-        conn.close()
+            
+            db.commit()
+            
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error in save_alerts: {e}")
+        finally:
+            db.close()
         
         return {
             'saved': saved_count,
@@ -205,7 +273,6 @@ class AlertDatabase:
     def update_candle_timestamp(self, asset: str, timeframe: str, candle_timestamp: int) -> bool:
         """
         Update the last processed candle timestamp for a given asset and timeframe.
-        This helps track when new candles are generated.
         
         Args:
             asset: Asset symbol (e.g., "BTCUSDT")
@@ -216,20 +283,41 @@ class AlertDatabase:
             True if updated successfully, False otherwise
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT OR REPLACE INTO candle_timestamps 
-                (asset, timeframe, last_candle_timestamp, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            ''', (asset, timeframe, candle_timestamp))
-            
-            conn.commit()
-            conn.close()
-            return True
+            db = SessionLocal()
+            try:
+                symbol_id = self._get_symbol_id(db, asset)
+                timeframe_id = self._get_timeframe_id(db, timeframe)
+                
+                if not symbol_id or not timeframe_id:
+                    return False
+                
+                db.execute(
+                    text("""
+                        INSERT INTO candle_timestamps 
+                        (symbol_id, timeframe_id, last_candle_timestamp, updated_at)
+                        VALUES (:symbol_id, :timeframe_id, :timestamp, NOW())
+                        ON CONFLICT (symbol_id, timeframe_id)
+                        DO UPDATE SET 
+                            last_candle_timestamp = EXCLUDED.last_candle_timestamp,
+                            updated_at = NOW()
+                    """),
+                    {
+                        "symbol_id": symbol_id,
+                        "timeframe_id": timeframe_id,
+                        "timestamp": candle_timestamp
+                    }
+                )
+                
+                db.commit()
+                return True
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Error updating candle timestamp: {e}")
+                return False
+            finally:
+                db.close()
         except Exception as e:
-            print(f"Error updating candle timestamp: {e}")
+            logger.error(f"Error in update_candle_timestamp: {e}")
             return False
     
     def get_last_candle_timestamp(self, asset: str, timeframe: str) -> Optional[int]:
@@ -244,21 +332,29 @@ class AlertDatabase:
             Unix timestamp of last processed candle, or None if not found
         """
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT last_candle_timestamp 
-                FROM candle_timestamps
-                WHERE asset = ? AND timeframe = ?
-            ''', (asset, timeframe))
-            
-            result = cursor.fetchone()
-            conn.close()
-            
-            return result[0] if result else None
+            db = SessionLocal()
+            try:
+                symbol_id = self._get_symbol_id(db, asset)
+                timeframe_id = self._get_timeframe_id(db, timeframe)
+                
+                if not symbol_id or not timeframe_id:
+                    return None
+                
+                result = db.execute(
+                    text("""
+                        SELECT last_candle_timestamp 
+                        FROM candle_timestamps
+                        WHERE symbol_id = :symbol_id AND timeframe_id = :timeframe_id
+                    """),
+                    {"symbol_id": symbol_id, "timeframe_id": timeframe_id}
+                )
+                
+                row = result.fetchone()
+                return row[0] if row else None
+            finally:
+                db.close()
         except Exception as e:
-            print(f"Error getting candle timestamp: {e}")
+            logger.error(f"Error getting candle timestamp: {e}")
             return None
     
     def is_new_candle(self, asset: str, timeframe: str, current_candle_timestamp: int) -> bool:
@@ -311,14 +407,13 @@ class AlertDatabase:
             if df_4h is not None and len(df_4h) > 0:
                 try:
                     # Get the latest candle timestamp (after get_candle, latest is at iloc[-1])
-                    # get_candle reverses the dataframe, so the last row is the most recent
                     latest_4h_timestamp = int(df_4h.iloc[-1]['unix'])
                     should_process_4h = self.is_new_candle(asset_symbol, '4h', latest_4h_timestamp)
                     
                     if should_process_4h:
                         self.update_candle_timestamp(asset_symbol, '4h', latest_4h_timestamp)
                 except (KeyError, IndexError, ValueError) as e:
-                    print(f"Warning: Could not extract 4H candle timestamp: {e}")
+                    logger.warning(f"Could not extract 4H candle timestamp: {e}")
             
             if should_process_4h:
                 summary['4h'] = self.save_alerts(alerts_4h, asset_symbol)
@@ -333,14 +428,13 @@ class AlertDatabase:
             if df_30m is not None and len(df_30m) > 0:
                 try:
                     # Get the latest candle timestamp (after get_candle, latest is at iloc[-1])
-                    # get_candle reverses the dataframe, so the last row is the most recent
                     latest_30m_timestamp = int(df_30m.iloc[-1]['unix'])
                     should_process_30m = self.is_new_candle(asset_symbol, '30m', latest_30m_timestamp)
                     
                     if should_process_30m:
                         self.update_candle_timestamp(asset_symbol, '30m', latest_30m_timestamp)
                 except (KeyError, IndexError, ValueError) as e:
-                    print(f"Warning: Could not extract 30M candle timestamp: {e}")
+                    logger.warning(f"Could not extract 30M candle timestamp: {e}")
             
             if should_process_30m:
                 summary['30m'] = self.save_alerts(alerts_30m, asset_symbol)
@@ -348,4 +442,3 @@ class AlertDatabase:
                 summary['30m'] = {'saved': 0, 'skipped': len(alerts_30m), 'errors': 0}
         
         return summary
-

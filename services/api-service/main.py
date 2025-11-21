@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared.database import get_db, init_db
-from shared.models import TradingSignal, OHLCVCandle
+from shared.models import OHLCVCandle
 from shared.logger import setup_logger
 from shared.storage import StorageService
 from shared.redis_client import get_redis
@@ -52,47 +52,36 @@ app.add_middleware(
 
 
 # Pydantic models
-class TradingSignalResponse(BaseModel):
+class StrategyAlertResponse(BaseModel):
     id: int
     symbol: str
+    timeframe: str
     timestamp: datetime
-    market_score: int
-    direction: str
-    price: float
-    entry1: Optional[float]
-    entry2: Optional[float]
-    sl: Optional[float]
-    tp1: Optional[float]
-    tp2: Optional[float]
-    tp3: Optional[float]
-    swing_high: Optional[float]
-    swing_low: Optional[float]
-    support_level: Optional[float]
-    resistance_level: Optional[float]
-    confluence: Optional[str]
-    risk_reward_ratio: Optional[float]
-    pullback_detected: bool
-    confidence_score: Optional[float]
+    entry_price: float
+    stop_loss: float
+    take_profit_1: float
+    take_profit_2: Optional[float]
+    take_profit_3: Optional[float]
+    risk_score: Optional[str]
+    swing_low_price: float
+    swing_low_timestamp: datetime
+    swing_high_price: float
+    swing_high_timestamp: datetime
+    direction: Optional[str]
+    created_at: datetime
     
     class Config:
         from_attributes = True
 
 
-class SignalSummary(BaseModel):
+class AlertSummary(BaseModel):
     symbol: str
-    market_score: int
-    direction: str
-    price: float
-    entry1: Optional[float]
-    sl: Optional[float]
-    tp1: Optional[float]
-    tp2: Optional[float]
-    tp3: Optional[float]
-    swing_high: Optional[float]
-    swing_low: Optional[float]
-    support_level: Optional[float]
-    resistance_level: Optional[float]
-    confluence: Optional[str]
+    timeframe: str
+    direction: Optional[str]
+    entry_price: float
+    stop_loss: float
+    take_profit_1: float
+    risk_score: Optional[str]
 
 
 class MarketMetadataResponse(BaseModel):
@@ -348,63 +337,77 @@ async def get_market_metadata(db: Session = Depends(get_db)):
         return _default_market_metadata()
 
 
-@app.get("/signals", response_model=List[TradingSignalResponse])
-async def get_signals(
+@app.get("/alerts", response_model=List[StrategyAlertResponse])
+async def get_alerts(
     symbol: Optional[str] = Query(None, description="Filter by symbol"),
+    timeframe: Optional[str] = Query(None, description="Filter by timeframe"),
     direction: Optional[str] = Query(None, description="Filter by direction (long/short)"),
     limit: int = Query(100, ge=1, le=1000, description="Limit results"),
     db: Session = Depends(get_db)
 ):
-    """Get trading signals"""
+    """Get strategy alerts"""
     try:
         with StorageService() as storage:
-            signals = storage.get_signals(symbol=symbol, direction=direction, limit=limit)
-            return signals
+            alerts = storage.get_strategy_alerts(symbol=symbol, timeframe=timeframe, direction=direction, limit=limit)
+            return alerts
     except Exception as e:
-        logger.error(f"Error getting signals: {e}")
+        logger.error(f"Error getting alerts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/signals/{symbol}/latest", response_model=TradingSignalResponse)
-async def get_latest_signal(
+@app.get("/alerts/{symbol}/latest", response_model=StrategyAlertResponse)
+async def get_latest_alert(
     symbol: str,
+    timeframe: Optional[str] = Query(None, description="Filter by timeframe"),
     db: Session = Depends(get_db)
 ):
-    """Get latest signal for a symbol"""
+    """Get latest alert for a symbol"""
     try:
         with StorageService() as storage:
-            signal = storage.get_latest_signal(symbol)
-            if not signal:
-                raise HTTPException(status_code=404, detail=f"No signal found for {symbol}")
-            return signal
+            alert = storage.get_latest_strategy_alert(symbol, timeframe=timeframe)
+            if not alert:
+                raise HTTPException(status_code=404, detail=f"No alert found for {symbol}")
+            return alert
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting latest signal: {e}")
+        logger.error(f"Error getting latest alert: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/signals/summary", response_model=List[SignalSummary])
-async def get_signals_summary(
+@app.get("/alerts/summary", response_model=List[AlertSummary])
+async def get_alerts_summary(
     db: Session = Depends(get_db)
 ):
-    """Get summary of latest signals for all symbols"""
+    """Get summary of latest alerts for all symbols"""
     try:
         with StorageService() as storage:
-            # Get latest signal for each symbol
-            signals = storage.get_signals(limit=1000)
+            # Get latest alert for each symbol/timeframe combination
+            alerts = storage.get_strategy_alerts(limit=1000)
             
             # Group by symbol and get latest
             symbol_map = {}
-            for signal in signals:
-                if signal.symbol not in symbol_map:
-                    symbol_map[signal.symbol] = signal
-                elif signal.timestamp > symbol_map[signal.symbol].timestamp:
-                    symbol_map[signal.symbol] = signal
+            for alert in alerts:
+                key = f"{alert['symbol']}_{alert.get('timeframe', '')}"
+                if key not in symbol_map:
+                    symbol_map[key] = alert
+                elif alert['timestamp'] > symbol_map[key]['timestamp']:
+                    symbol_map[key] = alert
             
-            return list(symbol_map.values())
+            return [
+                AlertSummary(
+                    symbol=a['symbol'],
+                    timeframe=a.get('timeframe', ''),
+                    direction=a.get('direction'),
+                    entry_price=a['entry_price'],
+                    stop_loss=a['stop_loss'],
+                    take_profit_1=a['take_profit_1'],
+                    risk_score=a.get('risk_score')
+                )
+                for a in symbol_map.values()
+            ]
     except Exception as e:
-        logger.error(f"Error getting signals summary: {e}")
+        logger.error(f"Error getting alerts summary: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -427,37 +430,6 @@ async def get_candles(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/sr-levels/{symbol}")
-async def get_sr_levels(
-    symbol: str,
-    timeframe: str = Query("1h", description="Timeframe"),
-    db: Session = Depends(get_db)
-):
-    """Get support and resistance levels for a symbol"""
-    try:
-        with StorageService() as storage:
-            levels = storage.get_active_sr_levels(symbol, timeframe)
-            return levels
-    except Exception as e:
-        logger.error(f"Error getting S/R levels: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/swings/{symbol}")
-async def get_swings(
-    symbol: str,
-    timeframe: str = Query("1h", description="Timeframe"),
-    limit: int = Query(100, ge=1, le=1000, description="Limit results"),
-    db: Session = Depends(get_db)
-):
-    """Get latest swing points for a symbol"""
-    try:
-        with StorageService() as storage:
-            swings = storage.get_latest_swings(symbol, timeframe, limit)
-            return swings
-    except Exception as e:
-        logger.error(f"Error getting swings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/symbols")
