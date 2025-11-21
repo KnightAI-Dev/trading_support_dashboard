@@ -256,11 +256,14 @@ class AlertDatabase:
                         alert_id = inserted_row[0]
                         # Publish event to Redis for API service to broadcast
                         try:
-                            publish_event("strategy_alert", {
+                            # Ensure timestamp is in ISO format string
+                            timestamp_str = alert_timestamp.isoformat() if hasattr(alert_timestamp, 'isoformat') else str(alert_timestamp)
+                            
+                            alert_event = {
                                 "id": alert_id,
                                 "symbol": asset_symbol,
                                 "timeframe": timeframe,
-                                "timestamp": alert_timestamp.isoformat() if hasattr(alert_timestamp, 'isoformat') else str(alert_timestamp),
+                                "timestamp": timestamp_str,
                                 "entry_price": float(alert.get('entry_level', 0)),
                                 "stop_loss": float(alert.get('sl', 0)),
                                 "take_profit_1": float(alert.get('tp1', 0)),
@@ -270,9 +273,20 @@ class AlertDatabase:
                                 "swing_low_price": float(low_price),
                                 "swing_high_price": float(high_price),
                                 "direction": alert.get('trend_type')
-                            })
+                            }
+                            
+                            publish_event("strategy_alert", alert_event)
+                            logger.info(
+                                f"Published strategy_alert event to Redis",
+                                extra={
+                                    "alert_id": alert_id,
+                                    "symbol": asset_symbol,
+                                    "timeframe": timeframe,
+                                    "direction": alert.get('trend_type')
+                                }
+                            )
                         except Exception as e:
-                            logger.warning(f"Failed to publish strategy_alert event: {e}")
+                            logger.error(f"Failed to publish strategy_alert event: {e}", exc_info=True)
                     
                     saved_count += 1
                     

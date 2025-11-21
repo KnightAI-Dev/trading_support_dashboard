@@ -1,5 +1,18 @@
+"""
+Strategy Interface - Core trading strategy logic
+
+This module implements the main trading strategy that combines:
+- Swing high/low detection
+- Support/resistance level identification
+- Fibonacci level calculations
+- Confluence scoring
+- Alert generation
+"""
+from typing import List, Dict, Tuple, Optional
+import pandas as pd
 from swing_high_low import calculate_swing_points, filter_between, filter_rate
 import support_resistance
+
 
 class StrategyInterface:
     def __init__(self):
@@ -36,35 +49,65 @@ class StrategyInterface:
 
         
         
-    def get_candle(self, timeframe_ticker_df, candle_counts):
-        df = timeframe_ticker_df.iloc[::-1]
-        if len(timeframe_ticker_df) < candle_counts:
+    def get_candle(self, timeframe_ticker_df: Optional[pd.DataFrame], candle_counts: int) -> Optional[pd.DataFrame]:
+        """
+        Extract and reverse the last N candles from a DataFrame.
+        
+        Args:
+            timeframe_ticker_df: DataFrame with OHLC data (newest first), or None
+            candle_counts: Number of candles to extract
+            
+        Returns:
+            DataFrame with candles in chronological order (oldest first), or None if insufficient data
+        """
+        if timeframe_ticker_df is None or len(timeframe_ticker_df) == 0:
+            return None
+        
+        df = timeframe_ticker_df.iloc[::-1].copy()  # Reverse to get chronological order
+        if len(df) < candle_counts:
             return None
         df = df.iloc[:candle_counts].copy()
         return df
     
     
-    def get_swingHL(self, timeframe_ticker_df, swing_high_low_candle_counts, swing_pruning_rate):
-        if len(timeframe_ticker_df) < swing_high_low_candle_counts:
-            return None, None
-        swing_high_list, swing_low_list = calculate_swing_points(timeframe_ticker_df, window=self.swing_window)
-
-        filtered_swing_lows = filter_between(swing_high_list, swing_low_list, keep="min")
-        filtered_swing_highs = filter_between(swing_low_list, swing_high_list, keep="max")
-
-        filtered_swing_high_list, filtered_swing_low_list = \
-            filter_rate(filtered_swing_highs, filtered_swing_lows, swing_pruning_rate)
+    def get_swingHL(self, timeframe_ticker_df: pd.DataFrame, swing_high_low_candle_counts: int, swing_pruning_rate: float) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+        """
+        Calculate and filter swing highs and lows from candle data.
         
-        return filtered_swing_high_list, filtered_swing_low_list
+        Args:
+            timeframe_ticker_df: DataFrame with OHLC data
+            swing_high_low_candle_counts: Minimum number of candles required
+            swing_pruning_rate: Rate threshold for filtering swing points
+            
+        Returns:
+            Tuple of (swing_highs_list, swing_lows_list) where each list contains (index, price) tuples
+        """
+        if timeframe_ticker_df is None or len(timeframe_ticker_df) < swing_high_low_candle_counts:
+            return [], []
+        
+        try:
+            swing_high_list, swing_low_list = calculate_swing_points(timeframe_ticker_df, window=self.swing_window)
+
+            filtered_swing_lows = filter_between(swing_high_list, swing_low_list, keep="min")
+            filtered_swing_highs = filter_between(swing_low_list, swing_high_list, keep="max")
+
+            filtered_swing_high_list, filtered_swing_low_list = \
+                filter_rate(filtered_swing_highs, filtered_swing_lows, swing_pruning_rate)
+            
+            return filtered_swing_high_list, filtered_swing_low_list
+        except Exception as e:
+            # Return empty lists on any error
+            return [], []
 
 
     
-    def get_support_resistance(self, timeframe_ticker_df, high_timeframe_flag):
+    def get_support_resistance(self, timeframe_ticker_df: pd.DataFrame, high_timeframe_flag: bool) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
         """
         Calculate support and resistance levels from the DataFrame.
         
         Args:
             timeframe_ticker_df: pandas DataFrame with OHLC data
+            high_timeframe_flag: If True, uses open/close for HTF analysis. If False, uses low/high for LTF analysis.
             
         Returns:
             Tuple of (support_level_list, resistance_level_list) where each list contains
@@ -116,7 +159,7 @@ class StrategyInterface:
             
         return support_level_list, resistance_level_list
     
-    def calc_fib_levels(self, swingHighs, swingLows, timeframe):
+    def calc_fib_levels(self, swingHighs: List[Tuple[int, float]], swingLows: List[Tuple[int, float]], timeframe: str) -> List[Dict]:
         """
         Calculate Fibonacci levels based on swing highs and lows.
         
@@ -158,8 +201,8 @@ class StrategyInterface:
                 continue
             
             # Validate low_idx and low_price
-            if not isinstance(low_idx, (int, float)) or not isinstance(low_price, (int, float)):
-                continue
+            # if not isinstance(low_idx, (int, float)) or not isinstance(low_price, (int, float)):
+            #     continue
             
             if low_price <= 0:
                 continue
@@ -230,7 +273,7 @@ class StrategyInterface:
         return output
 
 
-    def confirm_swingHL(self, swingHighs, swingLows, support_resistance_dict, timeframe):
+    def confirm_swingHL(self, swingHighs: List[Tuple[int, float]], swingLows: List[Tuple[int, float]], support_resistance_dict: Dict, timeframe: str) -> List[Dict]:
         """
         Confirm swing high/low Fibonacci levels by checking if they align with support/resistance levels
         from multiple timeframes.
@@ -348,7 +391,7 @@ class StrategyInterface:
 
         return confirmed_swingHL
 
-    def add_confluence_marks(self, confirmed_levels):
+    def add_confluence_marks(self, confirmed_levels: List[Dict]) -> List[Dict]:
         """
         Add confluence scoring marks to confirmed levels based on match flags.
         
@@ -418,7 +461,7 @@ class StrategyInterface:
         
         return marked_levels
     
-    def generate_alerts(self, asset_symbol,latest_close_price, confirmed_levels, bearish_alert_val=0.5, bullish_alert_val=0.618):
+    def generate_alerts(self, asset_symbol: str, latest_close_price: float, confirmed_levels: List[Dict], bearish_alert_val: float = 0.5, bullish_alert_val: float = 0.618) -> List[Dict]:
         """
         Generate alerts based on price approach to key Fibonacci levels.
         
@@ -442,56 +485,95 @@ class StrategyInterface:
             left_high = level.get("left_high")
             low_center = level.get("low_center")
             
-            # Need right_high and low_center to calculate levels
-            if low_center is None and left_high is None:
-                continue
-
-            elif right_high is None and low_center is None:
+            # Validate required data
+            if low_center is None:
                 continue
             
-            # Extract prices from tuples
-            low_price = low_center[1]
-            right_high_price = right_high[1]
-            left_high_price = left_high[1]
+            # Need at least one high (right or left) to calculate levels
+            if right_high is None and left_high is None:
+                continue
             
-            if (right_high_price <= low_price) or (left_high_price <= low_price):
+            try:
+                # Extract prices from tuples
+                low_price = low_center[1] if isinstance(low_center, (tuple, list)) and len(low_center) >= 2 else None
+                right_high_price = right_high[1] if right_high and isinstance(right_high, (tuple, list)) and len(right_high) >= 2 else None
+                left_high_price = left_high[1] if left_high and isinstance(left_high, (tuple, list)) and len(left_high) >= 2 else None
+                
+                if low_price is None or low_price <= 0:
+                    continue
+                
+                # Validate price relationships
+                if right_high_price is not None and right_high_price <= low_price:
+                    continue
+                if left_high_price is not None and left_high_price <= low_price:
+                    continue
+                    
+            except (IndexError, TypeError, ValueError) as e:
+                # Skip this level if we can't extract prices
                 continue
             
             # Get the confluence mark (highest available)
             confluence_mark = level.get("confluence_mark", "none")
             
             # Calculate fib_05_level: bearish retracement from right_high to low_center
-            # Formula: right_high - (right_high - low_price) * 0.5
-            fib_05_level = right_high_price - (right_high_price - low_price) * self.bearish_alert_level
-            # Calculate fib_level_618: bullish extension from low_center to right_high
-            # Formula: low_price + (right_high_price - low_price) * 0.618
-            fib_level_618 = low_price + (left_high_price - low_price) * self.bullish_alert_level
+            # Only calculate if we have right_high
+            fib_05_level = None
+            if right_high_price is not None:
+                fib_05_level = right_high_price - (right_high_price - low_price) * self.bearish_alert_level
             
+            # Calculate fib_level_618: bullish extension from low_center to left_high
+            # Only calculate if we have left_high
+            fib_level_618 = None
+            if left_high_price is not None:
+                fib_level_618 = low_price + (left_high_price - low_price) * self.bullish_alert_level
             
-            # Calculate percentage differences for both levels
-            diff_pct_618 = abs(latest_close_price - fib_level_618) / fib_level_618
-            diff_pct_05 = abs(latest_close_price - fib_05_level) / fib_05_level
-            
-            # Get the fib level price in 0.7, 0.618
+            # Get the fib level prices
             entry_level_07 = level.get("fib_bull_lower", 0.0)
             entry_level_618 = level.get("fib_bear_level", 0.0)
             
-            # Calculate the sl, tp1, tp2, tp3
-            bearish_sl = left_high_price - (left_high_price - low_price) * self.bearish_sl_fib_level
-            bearish_tp1 = left_high_price - (left_high_price - low_price) * self.tp1_fib_level
-            bearish_tp2 = left_high_price - (left_high_price - low_price) * self.tp2_fib_level
-            bearish_tp3 = left_high_price - (left_high_price - low_price) * self.tp3_fib_level
-            bearish_approaching = abs(latest_close_price - entry_level_618) / entry_level_618
+            # Calculate percentage differences for both levels (only if levels are valid)
+            diff_pct_618 = float('inf')
+            if fib_level_618 is not None and fib_level_618 > 0:
+                diff_pct_618 = abs(latest_close_price - fib_level_618) / fib_level_618
+            
+            diff_pct_05 = float('inf')
+            if fib_05_level is not None and fib_05_level > 0:
+                diff_pct_05 = abs(latest_close_price - fib_05_level) / fib_05_level
+            
+            # Calculate the sl, tp1, tp2, tp3 for bearish (only if we have left_high)
+            bearish_sl = None
+            bearish_tp1 = None
+            bearish_tp2 = None
+            bearish_tp3 = None
+            bearish_approaching = float('inf')
+            
+            if left_high_price is not None:
+                bearish_sl = left_high_price - (left_high_price - low_price) * self.bearish_sl_fib_level
+                bearish_tp1 = left_high_price - (left_high_price - low_price) * self.tp1_fib_level
+                bearish_tp2 = left_high_price - (left_high_price - low_price) * self.tp2_fib_level
+                bearish_tp3 = left_high_price - (left_high_price - low_price) * self.tp3_fib_level
+                if entry_level_618 and entry_level_618 > 0:
+                    bearish_approaching = abs(latest_close_price - entry_level_618) / entry_level_618
 
-            bullish_sl = low_price + (right_high_price - low_price) * self.bullish_sl_fib_level
-            bullish_tp1 = low_price + (right_high_price - low_price) * self.tp1_fib_level
-            bullish_tp2 = low_price + (right_high_price - low_price) * self.tp2_fib_level
-            bullish_tp3 = low_price + (right_high_price - low_price) * self.tp3_fib_level
-            bullish_approaching = abs(latest_close_price - entry_level_07) / entry_level_07
+            # Calculate the sl, tp1, tp2, tp3 for bullish (only if we have right_high)
+            bullish_sl = None
+            bullish_tp1 = None
+            bullish_tp2 = None
+            bullish_tp3 = None
+            bullish_approaching = float('inf')
+            
+            if right_high_price is not None:
+                bullish_sl = low_price + (right_high_price - low_price) * self.bullish_sl_fib_level
+                bullish_tp1 = low_price + (right_high_price - low_price) * self.tp1_fib_level
+                bullish_tp2 = low_price + (right_high_price - low_price) * self.tp2_fib_level
+                bullish_tp3 = low_price + (right_high_price - low_price) * self.tp3_fib_level
+                if entry_level_07 and entry_level_07 > 0:
+                    bullish_approaching = abs(latest_close_price - entry_level_07) / entry_level_07
+            
             # Check if price is approaching 0.618 level (bullish alert)
-            if diff_pct_618 <= self.approaching_tolerance_pct:
+            # if fib_level_618 is not None and diff_pct_618 <= self.approaching_tolerance_pct:
                 # Only trigger if closer to 0.618 than to 0.5
-                alerts.append({
+            alerts.append({
                     "timeframe": level.get("timeframe", "unknown"),
                     "trend_type": "long",
                     "asset": asset_symbol,
@@ -508,9 +590,9 @@ class StrategyInterface:
                 })
             
             # Check if price is approaching 0.5 level (bearish alert)
-            if diff_pct_05 <= self.approaching_tolerance_pct:
+            # if fib_05_level is not None and diff_pct_05 <= self.approaching_tolerance_pct:
                 # Only trigger if closer to 0.5 than to 0.618
-                alerts.append({
+            alerts.append({
                     "timeframe": level.get("timeframe", "unknown"),
                     "trend_type": "short",
                     "asset": asset_symbol,
@@ -527,7 +609,7 @@ class StrategyInterface:
                 })
         return alerts
 
-    def execute_strategy(self, df_4h, df_30m, df_1h, latest_close_price, asset_symbol="OTHER"):
+    def execute_strategy(self, df_4h: Optional[pd.DataFrame], df_30m: Optional[pd.DataFrame], df_1h: Optional[pd.DataFrame], latest_close_price: float, asset_symbol: str = "OTHER") -> Dict:
         """
         Execute the complete trading strategy workflow.
         
@@ -549,117 +631,143 @@ class StrategyInterface:
         # Step 1: Initialize StrategyInterface (already done in __init__)
         
         # Step 2: Get candles (200 candles for each timeframe)
-        candles_4h_df = self.get_candle(df_4h, 200)
-        candles_30m_df = self.get_candle(df_30m, 200)
-        candles_1h_df = self.get_candle(df_1h, 200)
+        candles_4h_df = self.get_candle(df_4h, 400)
+        candles_30m_df = self.get_candle(df_30m, 400)
+        candles_1h_df = self.get_candle(df_1h, 400)
         
-        # Validate candle data
-        if candles_4h_df is None or candles_30m_df is None or candles_1h_df is None:
-            return self._empty_result()
+        # Validate candle data - need at least one of 4h or 30m, and 1h for support/resistance
+        has_4h = candles_4h_df is not None and len(candles_4h_df) > 0
+        has_30m = candles_30m_df is not None and len(candles_30m_df) > 0
+        has_1h = candles_1h_df is not None and len(candles_1h_df) > 0
+        
+        if not (has_4h or has_30m):
+            return {"alerts_4h": [], "alerts_30m": []}
+        
+        if not has_1h:
+            return {"alerts_4h": [], "alerts_30m": []}
         
         # Step 3: Get swing highs and lows
-        if ("BTCUSDT" not in asset_symbol) and  ("ETHUSDT" not in asset_symbol) and ("SOLUSDT" not in asset_symbol):
-            asset_symbol = "OTHER"
+        # Use 'OTHER' as fallback if symbol not in pruning score dictionary
         swing_pruning_rate = self.swing_high_low_pruning_score.get(
             asset_symbol, 
-            self.swing_high_low_pruning_score[asset_symbol]
+            self.swing_high_low_pruning_score.get('OTHER', 0.03)
         )
         
-        swing_highs_4h, swing_lows_4h = self.get_swingHL(
-            candles_4h_df, 
-            self.candle_counts_for_swing_high_low,
-            swing_pruning_rate
-        )
+        # Get swing highs and lows for available timeframes
+        swing_highs_4h, swing_lows_4h = [], []
+        if has_4h:
+            swing_highs_4h, swing_lows_4h = self.get_swingHL(
+                candles_4h_df, 
+                self.candle_counts_for_swing_high_low,
+                swing_pruning_rate
+            )
+            # Handle None returns
+            if swing_highs_4h is None:
+                swing_highs_4h = []
+            if swing_lows_4h is None:
+                swing_lows_4h = []
         
-        swing_highs_30m, swing_lows_30m = self.get_swingHL(
-            candles_30m_df,
-            self.candle_counts_for_swing_high_low,
-            swing_pruning_rate
-        )
-        
-        # Handle None returns
-        if swing_highs_4h is None:
-            swing_highs_4h = []
-        if swing_lows_4h is None:
-            swing_lows_4h = []
-        if swing_highs_30m is None:
-            swing_highs_30m = []
-        if swing_lows_30m is None:
-            swing_lows_30m = []
+        swing_highs_30m, swing_lows_30m = [], []
+        if has_30m:
+            swing_highs_30m, swing_lows_30m = self.get_swingHL(
+                candles_30m_df,
+                self.candle_counts_for_swing_high_low,
+                swing_pruning_rate
+            )
+            # Handle None returns
+            if swing_highs_30m is None:
+                swing_highs_30m = []
+            if swing_lows_30m is None:
+                swing_lows_30m = []
         
         # Step 4: Get support/resistance levels
-        # HTF (4H) with high_timeframe_flag=True
-        support_4h, resistance_4h = self.get_support_resistance(
-            candles_4h_df,
-            high_timeframe_flag=True
-        )
+        # HTF (4H) with high_timeframe_flag=True (only if we have 4h data)
+        support_4h, resistance_4h = [], []
+        if has_4h:
+            support_4h, resistance_4h = self.get_support_resistance(
+                candles_4h_df,
+                high_timeframe_flag=True
+            )
         
-        # LTF (1H) with high_timeframe_flag=False
+        # LTF (1H) with high_timeframe_flag=False (always needed for confluence)
         support_1h, resistance_1h = self.get_support_resistance(
             candles_1h_df,
             high_timeframe_flag=False
         )
         
         # Step 5: Calculate Fibonacci levels
-        fib_levels_4h = self.calc_fib_levels(
-            swing_highs_4h,
-            swing_lows_4h,
-            timeframe="4h"
-        )
+        fib_levels_4h = []
+        if has_4h:
+            fib_levels_4h = self.calc_fib_levels(
+                swing_highs_4h,
+                swing_lows_4h,
+                timeframe="4h"
+            )
         
-        fib_levels_30m = self.calc_fib_levels(
-            swing_highs_30m,
-            swing_lows_30m,
-            timeframe="30m"
-        )
+        fib_levels_30m = []
+        if has_30m:
+            fib_levels_30m = self.calc_fib_levels(
+                swing_highs_30m,
+                swing_lows_30m,
+                timeframe="30m"
+            )
         
         # Step 6: Confirm swing high/low zones
-        # For 4H: use HTF support/resistance AND LTF support/resistance
-        support_resistance_dict_4h = {
-            "4h": (support_4h, resistance_4h),
-            "1h": (support_1h, resistance_1h)
-        }
+        confirmed_4h = []
+        if has_4h:
+            # For 4H: use HTF support/resistance AND LTF support/resistance
+            support_resistance_dict_4h = {
+                "4h": (support_4h, resistance_4h),
+                "1h": (support_1h, resistance_1h)
+            }
+            
+            confirmed_4h = self.confirm_swingHL(
+                swing_highs_4h,
+                swing_lows_4h,
+                support_resistance_dict_4h,
+                timeframe="4h"
+            )
         
-        confirmed_4h = self.confirm_swingHL(
-            swing_highs_4h,
-            swing_lows_4h,
-            support_resistance_dict_4h,
-            timeframe="4h"
-        )
-        
-        # For 30m: use LTF support/resistance AND HTF support/resistance
-        support_resistance_dict_30m = {
-            "1h": (support_1h, resistance_1h),
-            "4h": (support_4h, resistance_4h)
-        }
-        
-        confirmed_30m = self.confirm_swingHL(
-            swing_highs_30m,
-            swing_lows_30m,
-            support_resistance_dict_30m,
-            timeframe="30m"
-        )
+        confirmed_30m = []
+        if has_30m:
+            # For 30m: use LTF support/resistance AND HTF support/resistance
+            support_resistance_dict_30m = {
+                "1h": (support_1h, resistance_1h),
+                "4h": (support_4h, resistance_4h)
+            }
+            
+            confirmed_30m = self.confirm_swingHL(
+                swing_highs_30m,
+                swing_lows_30m,
+                support_resistance_dict_30m,
+                timeframe="30m"
+            )
         
         # Step 7: Confluence scoring
         # Add confluence marks to confirmed levels based on match flags
-        confirmed_4h_with_marks = self.add_confluence_marks(confirmed_4h)
-        confirmed_30m_with_marks = self.add_confluence_marks(confirmed_30m)
+        confirmed_4h_with_marks = self.add_confluence_marks(confirmed_4h) if has_4h else []
+        confirmed_30m_with_marks = self.add_confluence_marks(confirmed_30m) if has_30m else []
         
         # Step 8: Alert logic
-        alerts_4h = self.generate_alerts(
-            asset_symbol,
-            latest_close_price,
-            confirmed_4h_with_marks,
-            self.bearish_alert_level,
-            self.bullish_alert_level
-        )
-        alerts_30m = self.generate_alerts(
-            asset_symbol,
-            latest_close_price,
-            confirmed_30m_with_marks,
-            self.bearish_alert_level,
-            self.bullish_alert_level
-        )
+        alerts_4h = []
+        if has_4h:
+            alerts_4h = self.generate_alerts(
+                asset_symbol,
+                latest_close_price,
+                confirmed_4h_with_marks,
+                self.bearish_alert_level,
+                self.bullish_alert_level
+            )
+        
+        alerts_30m = []
+        if has_30m:
+            alerts_30m = self.generate_alerts(
+                asset_symbol,
+                latest_close_price,
+                confirmed_30m_with_marks,
+                self.bearish_alert_level,
+                self.bullish_alert_level
+            )
         
         # Compile final result
         result = {

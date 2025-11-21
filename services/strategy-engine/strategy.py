@@ -42,7 +42,7 @@ class RunStrategy:
             latest_timestamp = int(df.iloc[-1]['unix'])
             return latest_timestamp
         except (KeyError, IndexError, ValueError, TypeError) as e:
-            print(f"Warning: Could not extract candle timestamp: {e}")
+            # Log warning but don't print - use proper logging if needed
             return None
     
     def _check_new_candles(self, df_4h, df_30m, asset_symbol):
@@ -119,26 +119,6 @@ class RunStrategy:
             - 'result': dict - Strategy results (alerts_4h, alerts_30m) if executed, None otherwise
             - 'db_summary': dict - Database save summary if executed, None otherwise
         """
-        # Check for new candles
-        # new_candles_info = self._check_new_candles(df_4h, df_30m, asset_symbol)
-        
-        # if not new_candles_info['should_execute']:
-        #     return {
-        #         'executed': False,
-        #         'reason': 'No new candles detected. Strategy skipped.',
-        #         'new_candles': new_candles_info,
-        #         'result': None,
-        #         'db_summary': None
-        #     }
-        
-        # # Determine which timeframes have new candles
-        # reasons = []
-        # if new_candles_info['has_new_4h']:
-        #     reasons.append('new 4H candle')
-        # if new_candles_info['has_new_30m']:
-        #     reasons.append('new 30M candle')
-        # reason = f"Strategy executed due to: {', '.join(reasons)}"
-        
         # Execute the strategy
         strategy_result = self.strategy.execute_strategy(
             df_4h, df_30m, df_1h, latest_close_price, asset_symbol
@@ -157,8 +137,8 @@ class RunStrategy:
         
         return {
             'executed': True,
-            'reason': reason,
-            'new_candles': new_candles_info,
+            'reason': 'Strategy executed successfully',
+            'new_candles': {},
             'result': strategy_result,
             'db_summary': db_summary
         }

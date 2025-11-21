@@ -219,16 +219,26 @@ class ConnectionManager:
     async def broadcast_strategy_alert(self, alert_data: dict):
         """Broadcast strategy alert to all connected clients as TradingSignal"""
         symbol = alert_data.get("symbol")
+        timeframe = alert_data.get("timeframe", "")
         
         if not symbol:
             logger.warning(f"Strategy alert missing symbol: {alert_data}")
             return
         
+        # Ensure timestamp is a string (ISO format)
+        timestamp = alert_data.get("timestamp")
+        if timestamp and not isinstance(timestamp, str):
+            # Convert datetime to ISO string if needed
+            if hasattr(timestamp, 'isoformat'):
+                timestamp = timestamp.isoformat()
+            else:
+                timestamp = str(timestamp)
+        
         # Map strategy_alert to TradingSignal format expected by frontend
         signal_data = {
             "id": alert_data.get("id"),
             "symbol": symbol,
-            "timestamp": alert_data.get("timestamp"),
+            "timestamp": timestamp or datetime.now().isoformat(),
             "market_score": 0,  # Not available in strategy_alerts, default to 0
             "direction": alert_data.get("direction", "long"),
             "price": alert_data.get("entry_price", 0),
@@ -251,13 +261,24 @@ class ConnectionManager:
         clients_notified = 0
         # Broadcast to all connected clients (signals are important, everyone should see them)
         for ws_id in self.active_connections.keys():
-            await self.send_personal_message(ws_id, {
-                "type": "signal",
-                "data": signal_data
-            })
-            clients_notified += 1
+            try:
+                await self.send_personal_message(ws_id, {
+                    "type": "signal",
+                    "data": signal_data
+                })
+                clients_notified += 1
+            except Exception as e:
+                logger.error(f"Error sending signal to client {ws_id}: {e}")
         
-        logger.info(f"Broadcasted strategy alert for {symbol} to {clients_notified} clients")
+        logger.info(
+            f"Broadcasted strategy alert for {symbol} {timeframe} to {clients_notified} clients",
+            extra={
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "direction": signal_data.get("direction"),
+                "clients_notified": clients_notified
+            }
+        )
     
     async def start_redis_listener(self):
         """Start listening to Redis pub/sub for candle updates"""
@@ -320,6 +341,10 @@ class ConnectionManager:
                             elif channel == "marketcap_update":
                                 await self.broadcast_marketcap_update(data)
                             elif channel == "strategy_alert":
+                                logger.info(
+                                    f"Received strategy_alert event: {data.get('symbol')} {data.get('timeframe')}",
+                                    extra={"alert_id": data.get("id"), "symbol": data.get("symbol")}
+                                )
                                 await self.broadcast_strategy_alert(data)
                             else:
                                 logger.debug(f"Received message on unknown channel: {channel}")

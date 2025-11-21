@@ -16,6 +16,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 from shared.database import init_db, DatabaseManager, SessionLocal
 from shared.redis_client import get_redis
 from shared.logger import setup_logger
+from shared.storage import StorageService
 from sqlalchemy import text
 
 from strategy import RunStrategy
@@ -129,8 +130,8 @@ async def process_candle_update(candle_data: dict, strategy: RunStrategy):
         closed = candle_data.get("closed", False)
         
         # Only process closed candles for 4h and 30m timeframes
-        # if not closed or timeframe not in ["4h", "30m"]:
-        #     return
+        if not closed or timeframe not in ["4h", "30m"]:
+            return
         
         logger.info("processing_candle_update", symbol=symbol, timeframe=timeframe)
         
@@ -171,6 +172,118 @@ async def process_candle_update(candle_data: dict, strategy: RunStrategy):
             
     except Exception as e:
         logger.error("error_processing_candle_update", error=str(e), exc_info=True)
+
+
+async def initialize_strategy_alerts():
+    """
+    Initialize strategy alerts by scanning all symbols with candle data
+    and detecting alerts in the latest candles.
+    """
+    logger.info("initializing_strategy_alerts")
+    
+    try:
+        # Get all symbols that have candle data for 4h and 30m timeframes
+        with StorageService() as storage:
+            metadata = storage.get_market_metadata()
+            symbols = metadata.get("symbols", [])
+            symbol_timeframes = metadata.get("symbol_timeframes", {})
+        
+        if not symbols:
+            logger.warning("no_symbols_found_for_initialization")
+            return
+        
+        strategy = RunStrategy()
+        processed_count = 0
+        alert_count = 0
+        
+        # Process each symbol that has 4h or 30m data
+        for symbol in symbols:
+            try:
+                # Check if symbol has 4h or 30m data
+                timeframes = symbol_timeframes.get(symbol, [])
+                has_4h = "4h" in timeframes
+                has_30m = "30m" in timeframes
+                
+                if not (has_4h or has_30m):
+                    continue
+                
+                logger.debug("processing_symbol_for_initialization", symbol=symbol)
+                
+                # Fetch candle data
+                df_4h = get_candles_from_db(symbol, "4h", limit=400) if has_4h else None
+                df_30m = get_candles_from_db(symbol, "30m", limit=400) if has_30m else None
+                df_1h = get_candles_from_db(symbol, "1h", limit=400)  # Always fetch 1h for support/resistance
+                
+                # Validate we have required data
+                # Need at least one of 4h or 30m, and 1h for support/resistance
+                valid_4h = df_4h is not None and len(df_4h) > 0
+                valid_30m = df_30m is not None and len(df_30m) > 0
+                valid_1h = df_1h is not None and len(df_1h) > 0
+                
+                if not (valid_4h or valid_30m):
+                    logger.debug("no_valid_4h_or_30m_data", symbol=symbol)
+                    continue
+                
+                if not valid_1h:
+                    logger.debug("no_valid_1h_data_for_support_resistance", symbol=symbol)
+                    continue
+                
+                # Get latest close price from available candles (prefer 1h, then 4h, then 30m)
+                latest_close_price = 0.0
+                if valid_1h:
+                    latest_close_price = float(df_1h.iloc[-1]['close'])
+                elif valid_4h:
+                    latest_close_price = float(df_4h.iloc[-1]['close'])
+                elif valid_30m:
+                    latest_close_price = float(df_30m.iloc[-1]['close'])
+                
+                if latest_close_price == 0:
+                    logger.debug("no_valid_price_for_symbol", symbol=symbol)
+                    continue
+                
+                # Execute strategy - pass None for missing timeframes
+                # Strategy will handle None values appropriately
+                result = strategy.execute_strategy(
+                    df_4h=df_4h if valid_4h else None,
+                    df_30m=df_30m if valid_30m else None,
+                    df_1h=df_1h if valid_1h else None,
+                    latest_close_price=latest_close_price,
+                    asset_symbol=symbol
+                )
+                
+                if result.get('executed'):
+                    alerts_4h = result.get('result', {}).get('alerts_4h', [])
+                    alerts_30m = result.get('result', {}).get('alerts_30m', [])
+                    total_alerts = len(alerts_4h) + len(alerts_30m)
+                    
+                    if total_alerts > 0:
+                        alert_count += total_alerts
+                        logger.info(
+                            "alerts_detected_during_initialization",
+                            symbol=symbol,
+                            alerts_4h=len(alerts_4h),
+                            alerts_30m=len(alerts_30m)
+                        )
+                    
+                    processed_count += 1
+                    
+            except Exception as e:
+                logger.error(
+                    "error_processing_symbol_initialization",
+                    symbol=symbol,
+                    error=str(e),
+                    exc_info=True
+                )
+                continue
+        
+        logger.info(
+            "initialization_complete",
+            symbols_processed=processed_count,
+            total_alerts_detected=alert_count
+        )
+        
+    except Exception as e:
+        logger.error("error_during_initialization", error=str(e), exc_info=True)
 
 
 async def listen_to_candle_updates():
@@ -220,6 +333,14 @@ async def main():
     
     logger.info("strategy_engine_service_started")
     
+    # Initialize strategy alerts on startup
+    try:
+        await initialize_strategy_alerts()
+    except Exception as e:
+        logger.error("error_during_startup_initialization", error=str(e), exc_info=True)
+        # Continue even if initialization fails
+    
+    # Start listening to candle updates
     try:
         await listen_to_candle_updates()
     except KeyboardInterrupt:
