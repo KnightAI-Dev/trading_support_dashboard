@@ -271,6 +271,9 @@ class BinanceWebSocketService:
     async def flush_batch(self, db: Session) -> Tuple[int, int]:
         """Flush batched candles to database
         
+        Only saves closed candles to database. In-progress candles are published
+        via WebSocket for real-time display but not persisted.
+        
         Returns:
             Tuple[int, int]: (saved_count, failed_count)
         """
@@ -283,27 +286,44 @@ class BinanceWebSocketService:
         self.batch_buffer.clear()
         
         try:
-            # Group by closed vs in-progress for different SQL statements
+            # Separate closed and in-progress candles
             closed_candles = [c for c in batch if c.get("is_closed", False)]
             in_progress_candles = [c for c in batch if not c.get("is_closed", False)]
             
-            # Process closed candles
+            # Only save closed candles to database
             if closed_candles:
                 saved, failed = await self._batch_insert_candles(db, closed_candles, is_closed=True)
                 saved_count += saved
                 failed_count += failed
             
-            # Process in-progress candles
-            if in_progress_candles:
-                saved, failed = await self._batch_insert_candles(db, in_progress_candles, is_closed=False)
-                saved_count += saved
-                failed_count += failed
+            # Publish WebSocket events for ALL candles (closed and in-progress) for real-time display
+            # Closed candles are published in _batch_insert_candles, so publish in-progress here
+            for kline_data in in_progress_candles:
+                try:
+                    timestamp = kline_data.get("timestamp")
+                    publish_event("candle_update", {
+                        "symbol": kline_data.get("symbol"),
+                        "timeframe": kline_data.get("timeframe"),
+                        "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
+                        "open": float(kline_data.get("open", 0)),
+                        "high": float(kline_data.get("high", 0)),
+                        "low": float(kline_data.get("low", 0)),
+                        "close": float(kline_data.get("close", 0)),
+                        "volume": float(kline_data.get("volume", 0)),
+                        "closed": False  # Indicates this is an in-progress candle
+                    })
+                except Exception as e:
+                    logger.debug(f"Failed to publish in-progress candle event: {e}")
             
             if saved_count > 0:
                 db.commit()
                 self.total_batches_flushed += 1
                 self.total_candles_batched += saved_count
-                logger.debug(f"Flushed batch: {saved_count} saved, {failed_count} failed (total batches: {self.total_batches_flushed})")
+                logger.debug(
+                    f"Flushed batch: {saved_count} closed candles saved to DB, "
+                    f"{len(in_progress_candles)} in-progress candles published via WebSocket only "
+                    f"(total batches: {self.total_batches_flushed})"
+                )
             
             return saved_count, failed_count
         except Exception as e:
@@ -312,7 +332,11 @@ class BinanceWebSocketService:
             return 0, len(batch)
     
     async def _batch_insert_candles(self, db: Session, candles: List[Dict], is_closed: bool) -> Tuple[int, int]:
-        """Insert a batch of candles with the same closed status"""
+        """Insert a batch of closed candles to database
+        
+        Note: This method should only be called with closed candles (is_closed=True).
+        In-progress candles are handled separately and only published via WebSocket.
+        """
         if not candles:
             return 0, 0
         
@@ -362,32 +386,26 @@ class BinanceWebSocketService:
         if not params_list:
             return 0, failed_count
         
-        # Build appropriate SQL statement
-        if is_closed:
-            stmt = text("""
-                INSERT INTO ohlcv_candles 
-                (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
-                VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
-                ON CONFLICT (symbol_id, timeframe_id, timestamp) 
-                DO UPDATE SET
-                    open = EXCLUDED.open,
-                    high = EXCLUDED.high,
-                    low = EXCLUDED.low,
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume
-            """)
-        else:
-            stmt = text("""
-                INSERT INTO ohlcv_candles 
-                (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
-                VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
-                ON CONFLICT (symbol_id, timeframe_id, timestamp) 
-                DO UPDATE SET
-                    high = GREATEST(ohlcv_candles.high, EXCLUDED.high),
-                    low = LEAST(ohlcv_candles.low, EXCLUDED.low),
-                    close = EXCLUDED.close,
-                    volume = EXCLUDED.volume
-            """)
+        # Only build SQL statement for closed candles
+        # In-progress candles should not reach this method (filtered in flush_batch)
+        if not is_closed:
+            # This should never happen, but log a warning if it does
+            logger.warning("Attempted to insert in-progress candles to database - this should not happen")
+            return 0, len(candles)
+        
+        # SQL statement for closed candles only - full upsert
+        stmt = text("""
+            INSERT INTO ohlcv_candles 
+            (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
+            VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
+            ON CONFLICT (symbol_id, timeframe_id, timestamp) 
+            DO UPDATE SET
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume
+        """)
         
         try:
             # Execute batch insert
@@ -396,23 +414,23 @@ class BinanceWebSocketService:
             saved_count = len(params_list)
             
             # Publish events for closed candles with full OHLCV data
+            # All candles in this method are closed (in-progress are filtered out earlier)
             for kline_data in candles:
-                if kline_data.get("is_closed", False):
-                    try:
-                        timestamp = kline_data.get("timestamp")
-                        publish_event("candle_update", {
-                            "symbol": kline_data.get("symbol"),
-                            "timeframe": kline_data.get("timeframe"),
-                            "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
-                            "open": float(kline_data.get("open", 0)),
-                            "high": float(kline_data.get("high", 0)),
-                            "low": float(kline_data.get("low", 0)),
-                            "close": float(kline_data.get("close", 0)),
-                            "volume": float(kline_data.get("volume", 0)),
-                            "closed": True
-                        })
-                    except Exception as e:
-                        logger.debug(f"Failed to publish event: {e}")
+                try:
+                    timestamp = kline_data.get("timestamp")
+                    publish_event("candle_update", {
+                        "symbol": kline_data.get("symbol"),
+                        "timeframe": kline_data.get("timeframe"),
+                        "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
+                        "open": float(kline_data.get("open", 0)),
+                        "high": float(kline_data.get("high", 0)),
+                        "low": float(kline_data.get("low", 0)),
+                        "close": float(kline_data.get("close", 0)),
+                        "volume": float(kline_data.get("volume", 0)),
+                        "closed": True
+                    })
+                except Exception as e:
+                    logger.debug(f"Failed to publish closed candle event: {e}")
         except Exception as e:
             logger.error(f"Error in batch insert: {e}", exc_info=True)
             failed_count += len(params_list)
