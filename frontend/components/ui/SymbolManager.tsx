@@ -13,6 +13,7 @@ export interface SymbolItem {
   symbol: string;
   base: string;
   quote: string;
+  image_url?: string | null;
   marketcap?: number;
   volume_24h?: number;
   price: number;
@@ -250,8 +251,7 @@ export function SymbolManager({
 
   return (
     <div
-      className={`flex flex-col h-full bg-background border-r border-border ${className}`}
-      style={{ width: "260px" }}
+      className={`flex flex-col h-full w-full bg-background ${className}`}
     >
       {/* Search Box and Filters */}
       <div className="sticky top-0 z-10 bg-background border-b border-border">

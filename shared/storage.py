@@ -493,6 +493,7 @@ class StorageService:
                     lp.symbol,
                     s.base_asset as base,
                     s.quote_asset as quote,
+                    s.image_path as image_url,
                     COALESCE(md.market_cap, 0) as marketcap,
                     COALESCE(md.volume_24h, 0) as volume_24h,
                     COALESCE(lp.current_price, 0) as price,
@@ -528,10 +529,11 @@ class StorageService:
                     "symbol": symbol,
                     "base": base,
                     "quote": quote,
-                    "marketcap": float(row[3]) if row[3] else 0,
-                    "volume_24h": float(row[4]) if row[4] else 0,
-                    "price": float(row[5]) if row[5] else 0,
-                    "change24h": float(row[6]) if row[6] is not None else 0,
+                    "image_url": row[3] if row[3] else None,
+                    "marketcap": float(row[4]) if row[4] else 0,
+                    "volume_24h": float(row[5]) if row[5] else 0,
+                    "price": float(row[6]) if row[6] else 0,
+                    "change24h": float(row[7]) if row[7] is not None else 0,
                 })
             
             logger.debug(f"Retrieved {len(symbols)} symbols with price data")

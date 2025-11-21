@@ -126,6 +126,7 @@ export function useSymbolData() {
               symbol: update.symbol,
               base: update.base || update.symbol.replace("USDT", ""),
               quote: update.quote || "USDT",
+              image_url: update.image_url ?? null,
               marketcap: update.marketcap ?? 0,
               volume_24h: update.volume_24h ?? 0,
               price: update.price,
