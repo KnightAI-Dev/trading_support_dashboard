@@ -266,6 +266,14 @@ export function ChartContainer({
   // Update candles data with optimized incremental updates
   useEffect(() => {
     if (!seriesRef.current || !candles.length) return;
+    
+    // Check if series is still valid (not disposed)
+    try {
+      if (!seriesRef.current.setData) return;
+    } catch (error) {
+      // Series might be disposed
+      return;
+    }
 
     const filteredCandles = candles.filter(
       (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
@@ -303,11 +311,17 @@ export function ChartContainer({
         color: candle.close >= candle.open ? "#10b98180" : "#ef444480", // Green/red with 50% opacity
       }));
 
-      if (seriesRef.current) {
-        seriesRef.current.setData(chartData);
-      }
-      if (volumeSeriesRef.current) {
-        volumeSeriesRef.current.setData(volumeData);
+      try {
+        if (seriesRef.current) {
+          seriesRef.current.setData(chartData);
+        }
+        if (volumeSeriesRef.current) {
+          volumeSeriesRef.current.setData(volumeData);
+        }
+      } catch (error) {
+        // Series might be disposed, ignore
+        console.warn("ChartContainer: Series is disposed", error);
+        return;
       }
 
       // Update oldest loaded time if we have new data
@@ -319,11 +333,18 @@ export function ChartContainer({
       }
       
       // Fit content only on initial load or symbol/timeframe change
-      if (chartRef.current && chartData.length > 0) {
-        const visibleRange = chartRef.current.timeScale().getVisibleRange();
-        if (!visibleRange) {
-          chartRef.current.timeScale().fitContent();
+      try {
+        if (chartRef.current && chartData.length > 0) {
+          // Check if chart is still valid
+          if (!chartRef.current.timeScale) return;
+          const visibleRange = chartRef.current.timeScale().getVisibleRange();
+          if (!visibleRange) {
+            chartRef.current.timeScale().fitContent();
+          }
         }
+      } catch (error) {
+        // Chart might be disposed, ignore
+        console.warn("ChartContainer: Chart is disposed", error);
       }
     } else {
       // Incremental updates - only update new/changed candles
@@ -370,11 +391,17 @@ export function ChartContainer({
           color: candle.close >= candle.open ? "#10b98180" : "#ef444480", // 50% opacity
         }));
 
-        if (seriesRef.current) {
-          seriesRef.current.setData(chartData);
-        }
-        if (volumeSeriesRef.current) {
-          volumeSeriesRef.current.setData(volumeData);
+        try {
+          if (seriesRef.current) {
+            seriesRef.current.setData(chartData);
+          }
+          if (volumeSeriesRef.current) {
+            volumeSeriesRef.current.setData(volumeData);
+          }
+        } catch (error) {
+          // Series might be disposed, ignore
+          console.warn("ChartContainer: Series is disposed", error);
+          return;
         }
 
         // Update oldest loaded time
@@ -393,6 +420,11 @@ export function ChartContainer({
           // Update candlestick data
           if (seriesRef.current) {
             try {
+              // Check if series is still valid
+              if (!seriesRef.current.update) {
+                rebuildNeeded = true;
+                break;
+              }
               seriesRef.current.update({
                 time: candleTime,
                 open: candle.open,
@@ -401,7 +433,7 @@ export function ChartContainer({
                 close: candle.close,
               });
             } catch (error) {
-              // If update fails (e.g., trying to update older data), mark for rebuild
+              // If update fails (e.g., trying to update older data, or series is disposed), mark for rebuild
               console.warn("Update failed, will rebuild chart data:", error);
               rebuildNeeded = true;
               break; // Exit loop - we'll rebuild everything
@@ -411,6 +443,11 @@ export function ChartContainer({
           // Update volume data
           if (volumeSeriesRef.current) {
             try {
+              // Check if series is still valid
+              if (!volumeSeriesRef.current.update) {
+                rebuildNeeded = true;
+                break;
+              }
               volumeSeriesRef.current.update({
                 time: candleTime,
                 value: candle.volume,
@@ -445,11 +482,17 @@ export function ChartContainer({
             color: c.close >= c.open ? "#10b98180" : "#ef444480", // 50% opacity
           }));
           
-          if (seriesRef.current) {
-            seriesRef.current.setData(chartData);
-          }
-          if (volumeSeriesRef.current) {
-            volumeSeriesRef.current.setData(volumeData);
+          try {
+            if (seriesRef.current) {
+              seriesRef.current.setData(chartData);
+            }
+            if (volumeSeriesRef.current) {
+              volumeSeriesRef.current.setData(volumeData);
+            }
+          } catch (error) {
+            // Series might be disposed, ignore
+            console.warn("ChartContainer: Series is disposed", error);
+            return;
           }
           
           if (chartData.length > 0) {
@@ -496,44 +539,20 @@ export function ChartContainer({
     <div className="relative w-full h-full">
       <div ref={chartContainerRef} className="w-full" style={{ height: `${height}px` }} />
       
-      {chartSettings.showSwings && (
-        <SwingMarkers
-          chart={chartRef.current}
-          series={seriesRef.current}
-          swings={currentSwings}
-          candles={candles.filter(
-            (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
-          )}
-        />
-      )}
+      {/* Always show Swing High/Low markers from strategy alerts */}
+      <SwingMarkers
+        chart={chartRef.current}
+        series={seriesRef.current}
+        swings={currentSwings}
+        candles={candles.filter(
+          (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
+        )}
+      />
       
-      {chartSettings.showFibs && latestSignal && (
-        <FibonacciOverlay
-          chart={chartRef.current}
-          signal={latestSignal}
-          swings={currentSwings}
-        />
-      )}
+      {/* Hide Fibs, OB, S/R - removed from display */}
       
-      {chartSettings.showOrderBlocks && latestSignal && (
-        <OrderBlockOverlay
-          chart={chartRef.current}
-          signal={latestSignal}
-          candles={candles.filter(
-            (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
-          )}
-        />
-      )}
-      
-      {chartSettings.showSR && (
-        <SupportResistanceLines
-          chart={chartRef.current}
-          series={seriesRef.current}
-          srLevels={currentSR}
-        />
-      )}
-      
-      {chartSettings.showEntrySLTP && latestSignal && (
+      {/* Always show Entry/SL/TP lines */}
+      {latestSignal && (
         <EntrySlTpLines
           chart={chartRef.current}
           series={seriesRef.current}

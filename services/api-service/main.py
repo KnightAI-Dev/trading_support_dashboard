@@ -187,8 +187,10 @@ class ConnectionManager:
         
         # Broadcast directly - ticker event already contains: symbol, price, volume_24h, change24h
         # No need to query database which would be slow and potentially return stale data
+        # Create a copy of keys to avoid "dictionary keys changed during iteration" error
+        # if connections are removed during iteration
         clients_notified = 0
-        for ws_id in self.active_connections.keys():
+        for ws_id in list(self.active_connections.keys()):
             await self.send_personal_message(ws_id, {
                 "type": "symbol_update",
                 "data": symbol_data
@@ -207,7 +209,8 @@ class ConnectionManager:
         
         clients_notified = 0
         # Broadcast to all connected clients
-        for ws_id in self.active_connections.keys():
+        # Create a copy of keys to avoid "dictionary keys changed during iteration" error
+        for ws_id in list(self.active_connections.keys()):
             await self.send_personal_message(ws_id, {
                 "type": "marketcap_update",
                 "data": marketcap_data
@@ -278,7 +281,8 @@ class ConnectionManager:
         
         clients_notified = 0
         # Broadcast to all connected clients (signals are important, everyone should see them)
-        for ws_id in self.active_connections.keys():
+        # Create a copy of keys to avoid "dictionary keys changed during iteration" error
+        for ws_id in list(self.active_connections.keys()):
             try:
                 await self.send_personal_message(ws_id, {
                     "type": "signal",
@@ -460,6 +464,23 @@ async def get_latest_alert(
         raise
     except Exception as e:
         logger.error(f"Error getting latest alert: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/alerts/{symbol}/swings", response_model=List[StrategyAlertResponse])
+async def get_alerts_for_swings(
+    symbol: str,
+    timeframe: str = Query(..., description="Timeframe (required)"),
+    limit: int = Query(100, ge=1, le=1000, description="Limit results"),
+    db: Session = Depends(get_db)
+):
+    """Get strategy alerts for a specific symbol and timeframe to extract swing points from database"""
+    try:
+        with StorageService() as storage:
+            alerts = storage.get_strategy_alerts(symbol=symbol, timeframe=timeframe, limit=limit)
+            return alerts
+    except Exception as e:
+        logger.error(f"Error getting alerts for swings: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -20,20 +20,24 @@ export function EntrySlTpLines({
   useEffect(() => {
     if (!chart || !series || !signal) return;
 
-    // Cleanup previous series
-    seriesRef.current.forEach((lineSeries) => {
-      try {
-        chart.removeSeries(lineSeries);
-      } catch (e) {
-        // Series might already be removed
-      }
-    });
-    seriesRef.current = [];
+    try {
+      // Check if chart is still valid (not disposed)
+      if (!chart.timeScale || !chart.addLineSeries) return;
 
-    const timeScale = chart.timeScale();
-    const visibleRange = timeScale.getVisibleRange();
-    
-    if (!visibleRange) return;
+      // Cleanup previous series
+      seriesRef.current.forEach((lineSeries) => {
+        try {
+          chart.removeSeries(lineSeries);
+        } catch (e) {
+          // Series might already be removed
+        }
+      });
+      seriesRef.current = [];
+
+      const timeScale = chart.timeScale();
+      const visibleRange = timeScale.getVisibleRange();
+      
+      if (!visibleRange) return;
 
     const now = (Date.now() / 1000) as Time;
     const future = (visibleRange.to as number + 86400) as Time; // 24 hours ahead
@@ -105,16 +109,27 @@ export function EntrySlTpLines({
       ]);
       seriesRef.current.push(tp3Series);
     }
+    } catch (error) {
+      // Chart might be disposed, ignore the error
+      console.warn("EntrySlTpLines: Chart is disposed", error);
+      return;
+    }
 
     return () => {
       // Cleanup series on unmount
-      seriesRef.current.forEach((lineSeries) => {
-        try {
-          chart.removeSeries(lineSeries);
-        } catch (e) {
-          // Series might already be removed
+      try {
+        if (chart && chart.removeSeries) {
+          seriesRef.current.forEach((lineSeries) => {
+            try {
+              chart.removeSeries(lineSeries);
+            } catch (e) {
+              // Series might already be removed
+            }
+          });
         }
-      });
+      } catch (error) {
+        // Chart might be disposed, ignore
+      }
       seriesRef.current = [];
     };
   }, [chart, series, signal]);

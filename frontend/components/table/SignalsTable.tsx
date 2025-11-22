@@ -19,6 +19,7 @@ type SortField =
   | "timestamp" 
   | "market_score" 
   | "symbol" 
+  | "timeframe"
   | "direction" 
   | "entry"
   | "sl"
@@ -95,6 +96,10 @@ export function SignalsTable({ signals, onRowClick }: SignalsTableProps) {
         case "symbol":
           aValue = a.symbol;
           bValue = b.symbol;
+          break;
+        case "timeframe":
+          aValue = a.timeframe || "";
+          bValue = b.timeframe || "";
           break;
         case "direction":
           aValue = a.direction;
@@ -196,6 +201,17 @@ export function SignalsTable({ signals, onRowClick }: SignalsTableProps) {
                   <SortIcon field="symbol" />
                 </Button>
               </th>
+              <th className="px-4 py-3 text-left">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-auto p-0 font-semibold"
+                  onClick={() => handleSort("timeframe")}
+                >
+                  Timeframe
+                  <SortIcon field="timeframe" />
+                </Button>
+              </th>
               <th className="px-4 py-3 text-right">
                 <Button
                   variant="ghost"
@@ -290,6 +306,9 @@ export function SignalsTable({ signals, onRowClick }: SignalsTableProps) {
                 >
                   <td className="px-4 py-3 font-medium">
                     {signal.symbol.replace("USDT", "/USDT")}
+                  </td>
+                  <td className="px-4 py-3 text-sm text-muted-foreground">
+                    {signal.timeframe || "-"}
                   </td>
                   <td className="px-4 py-3 text-right font-medium">
                     {currentPrice !== undefined && currentPrice !== null 

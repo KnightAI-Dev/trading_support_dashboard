@@ -102,6 +102,32 @@ export function useWebSocket(symbol?: string, timeframe?: string) {
       switch (message.type) {
         case "signal":
           addSignal(message.data);
+          
+          // Extract swing high/low points from strategy_alert signal
+          // and add them as swing points to the store
+          if (message.data.swing_high && message.data.swing_high_timestamp) {
+            const swingHigh: SwingPoint = {
+              id: Date.now(), // Generate unique ID
+              symbol: message.data.symbol,
+              timeframe: message.data.timeframe || "unknown",
+              type: "high",
+              price: message.data.swing_high,
+              timestamp: message.data.swing_high_timestamp,
+            };
+            addSwingPoint(swingHigh);
+          }
+          
+          if (message.data.swing_low && message.data.swing_low_timestamp) {
+            const swingLow: SwingPoint = {
+              id: Date.now() + 1, // Generate unique ID
+              symbol: message.data.symbol,
+              timeframe: message.data.timeframe || "unknown",
+              type: "low",
+              price: message.data.swing_low,
+              timestamp: message.data.swing_low_timestamp,
+            };
+            addSwingPoint(swingLow);
+          }
           break;
         case "candle":
           addCandle(message.data);

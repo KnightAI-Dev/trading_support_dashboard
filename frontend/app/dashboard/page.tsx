@@ -9,7 +9,9 @@ import {
   fetchSRLevels,
   fetchLatestSignal,
   fetchMarketMetadata,
+  fetchAlertsForSwings,
 } from "@/lib/api";
+import { SwingPoint } from "@/lib/api";
 import { Timeframe } from "@/lib/types";
 import { ChartContainer } from "@/components/chart/ChartContainer";
 import { SymbolManager } from "@/components/ui/SymbolManager";
@@ -23,7 +25,7 @@ import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { formatPrice, formatTimestamp } from "@/lib/utils";
-import { Settings, TrendingUp, TrendingDown } from "lucide-react";
+import { Settings, TrendingUp, TrendingDown, RefreshCw } from "lucide-react";
 import Link from "next/link";
 
 const SYMBOL_MANAGER_WIDTH_KEY = "symbol_manager_width";
@@ -51,6 +53,78 @@ export default function DashboardPage() {
     setLoading,
     setError,
   } = useMarketStore();
+  
+  // Get current swing points for refresh function
+  const currentSwingPoints = useMarketStore((state) => state.swingPoints);
+
+  // State for refresh button loading
+  const [isRefreshingSwings, setIsRefreshingSwings] = useState(false);
+
+  // Function to refresh swing high/low points from backend
+  const refreshSwingPoints = useCallback(async () => {
+    setIsRefreshingSwings(true);
+    try {
+      // Send symbol and timeframe to backend to get alert data from database
+      const alerts = await fetchAlertsForSwings(selectedSymbol, selectedTimeframe, 100);
+
+      // Extract swing points from alerts returned by backend
+      const swingPointsMap = new Map<string, SwingPoint>(); // Use Map to prevent duplicates
+      
+      alerts.forEach((alert) => {
+        if (alert.swing_high && alert.swing_high_timestamp) {
+          // Create a unique key for this swing point
+          const key = `${alert.symbol}_${alert.timeframe}_high_${alert.swing_high_timestamp}_${alert.swing_high}`;
+          if (!swingPointsMap.has(key)) {
+            swingPointsMap.set(key, {
+              id: Date.now() + swingPointsMap.size,
+              symbol: alert.symbol,
+              timeframe: alert.timeframe || selectedTimeframe,
+              type: "high",
+              price: alert.swing_high,
+              timestamp: alert.swing_high_timestamp,
+            });
+          }
+        }
+        if (alert.swing_low && alert.swing_low_timestamp) {
+          // Create a unique key for this swing point
+          const key = `${alert.symbol}_${alert.timeframe}_low_${alert.swing_low_timestamp}_${alert.swing_low}`;
+          if (!swingPointsMap.has(key)) {
+            swingPointsMap.set(key, {
+              id: Date.now() + swingPointsMap.size + 1000,
+              symbol: alert.symbol,
+              timeframe: alert.timeframe || selectedTimeframe,
+              type: "low",
+              price: alert.swing_low,
+              timestamp: alert.swing_low_timestamp,
+            });
+          }
+        }
+      });
+
+      // Convert Map to array and sort by timestamp in ascending order
+      const uniqueSwingPoints = Array.from(swingPointsMap.values()).sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+      
+      // Only show swing points for the selected symbol and timeframe
+      // Remove all other swing points and only keep the ones for current symbol/timeframe
+      setSwingPoints(uniqueSwingPoints);
+      
+      // Also update the latest signal if we have alerts
+      if (alerts.length > 0) {
+        // Sort alerts by timestamp descending to get the latest
+        const sortedAlerts = [...alerts].sort(
+          (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        );
+        setLatestSignal(sortedAlerts[0]);
+      }
+    } catch (error) {
+      console.error("Error refreshing swing points:", error);
+      setError("Failed to refresh swing points");
+    } finally {
+      setIsRefreshingSwings(false);
+    }
+  }, [selectedSymbol, selectedTimeframe, setSwingPoints, setLatestSignal, setError]);
 
   // Resizable sidebar width state
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -271,44 +345,9 @@ export default function DashboardPage() {
             </div>
             <div className="flex-1" />
 
-            {/* Chart Toggle Controls */}
+            {/* Chart Toggle Controls - Swings and Entry/SL/TP are always shown */}
             <div className="flex items-center gap-4 flex-wrap">
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="show-fibs"
-                  checked={chartSettings.showFibs}
-                  onCheckedChange={(checked: boolean) =>
-                    updateChartSettings({ showFibs: checked })
-                  }
-                />
-                <Label htmlFor="show-fibs" className="text-sm cursor-pointer">
-                  Fibs
-                </Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="show-ob"
-                  checked={chartSettings.showOrderBlocks}
-                  onCheckedChange={(checked: boolean) =>
-                    updateChartSettings({ showOrderBlocks: checked })
-                  }
-                />
-                <Label htmlFor="show-ob" className="text-sm cursor-pointer">
-                  OB
-                </Label>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="show-sr"
-                  checked={chartSettings.showSR}
-                  onCheckedChange={(checked: boolean) =>
-                    updateChartSettings({ showSR: checked })
-                  }
-                />
-                <Label htmlFor="show-sr" className="text-sm cursor-pointer">
-                  S/R
-                </Label>
-              </div>
+              {/* Removed Fibs, OB, S/R toggles - they are hidden by default */}
               <div className="flex items-center gap-2">
                 <Switch
                   id="show-swings"
@@ -333,6 +372,16 @@ export default function DashboardPage() {
                   Entry/SL/TP
                 </Label>
               </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={refreshSwingPoints}
+                disabled={isRefreshingSwings}
+                className="flex items-center gap-2"
+              >
+                <RefreshCw className={`h-4 w-4 ${isRefreshingSwings ? "animate-spin" : ""}`} />
+                Refresh Swings
+              </Button>
             </div>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">

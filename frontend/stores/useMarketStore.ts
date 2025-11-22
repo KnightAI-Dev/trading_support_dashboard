@@ -43,11 +43,11 @@ interface MarketState {
 }
 
 const defaultChartSettings: ChartSettings = {
-  showFibs: true,
-  showOrderBlocks: true,
-  showSR: true,
-  showSwings: true,
-  showEntrySLTP: true,
+  showFibs: false,  // Hide Fibs by default
+  showOrderBlocks: false,  // Hide Order Blocks by default
+  showSR: false,  // Hide Support/Resistance by default
+  showSwings: true,  // Always show Swing High/Low
+  showEntrySLTP: true,  // Always show Entry/SL/TP
 };
 
 export const useMarketStore = create<MarketState>((set) => ({
@@ -97,13 +97,44 @@ export const useMarketStore = create<MarketState>((set) => ({
       }
       return state;
     }),
-  setSwingPoints: (swings) => set({ swingPoints: Array.isArray(swings) ? swings : [] }),
+  setSwingPoints: (swings) => {
+    // Sort swing points by timestamp in ascending order before storing
+    const sorted = Array.isArray(swings) 
+      ? [...swings].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      : [];
+    set({ swingPoints: sorted });
+  },
   addSwingPoint: (swing) =>
-    set((state) => ({
-      swingPoints: [...state.swingPoints, swing].filter(
-        (s) => s.symbol === swing.symbol && s.timeframe === swing.timeframe
-      ),
-    })),
+    set((state) => {
+      // Check if this swing point already exists (same symbol, timeframe, type, timestamp, and price)
+      const isDuplicate = state.swingPoints.some((s) => {
+        const sameSymbol = s.symbol === swing.symbol;
+        const sameTimeframe = s.timeframe === swing.timeframe;
+        const sameType = s.type === swing.type;
+        // Check if timestamp is within 1 second (to handle slight variations)
+        const timestampDiff = Math.abs(
+          new Date(s.timestamp).getTime() - new Date(swing.timestamp).getTime()
+        );
+        const sameTimestamp = timestampDiff < 1000;
+        // Check if price is very close (within 0.01% to handle floating point differences)
+        const priceDiff = Math.abs(s.price - swing.price);
+        const priceTolerance = Math.max(s.price, swing.price) * 0.0001; // 0.01% tolerance
+        const samePrice = priceDiff < priceTolerance;
+        
+        return sameSymbol && sameTimeframe && sameType && sameTimestamp && samePrice;
+      });
+      
+      // If duplicate, don't add it
+      if (isDuplicate) {
+        return state;
+      }
+      
+      // Add new swing and sort by timestamp
+      const updated = [...state.swingPoints, swing].sort(
+        (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+      return { swingPoints: updated };
+    }),
   setSRLevels: (levels) => set({ srLevels: Array.isArray(levels) ? levels : [] }),
   setSignals: (signals) => set({ signals }),
   addSignal: (signal) =>

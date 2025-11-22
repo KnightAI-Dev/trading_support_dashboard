@@ -21,27 +21,50 @@ export function SwingMarkers({
   useEffect(() => {
     if (!chart || !series || !swings.length || !candles.length) return;
 
-    const markers = swings.map((swing) => {
-      const candle = candles.find(
-        (c) => Math.abs(new Date(c.timestamp).getTime() - new Date(swing.timestamp).getTime()) < 60000
-      );
-      
-      if (!candle) return null;
+    try {
+      // Check if chart/series are still valid (not disposed)
+      // Try to access a property that would throw if disposed
+      if (!chart.timeScale || !series.setMarkers) return;
 
-      return {
-        time: (new Date(swing.timestamp).getTime() / 1000) as Time,
-        position: swing.type === "high" ? ("aboveBar" as const) : ("belowBar" as const),
-        color: swing.type === "high" ? "#10b981" : "#ef4444",
-        shape: swing.type === "high" ? ("circle" as const) : ("circle" as const),
-        size: 1.5,
-        text: swing.type === "high" ? "SH" : "SL",
-      };
-    }).filter(Boolean);
+      const markers = swings
+        .map((swing) => {
+          const candle = candles.find(
+            (c) => Math.abs(new Date(c.timestamp).getTime() - new Date(swing.timestamp).getTime()) < 60000
+          );
+          
+          if (!candle) return null;
 
-    series.setMarkers(markers as any);
+          return {
+            time: (new Date(swing.timestamp).getTime() / 1000) as Time,
+            position: swing.type === "high" ? ("aboveBar" as const) : ("belowBar" as const),
+            color: swing.type === "high" ? "#10b981" : "#ef4444",
+            shape: swing.type === "high" ? ("circle" as const) : ("circle" as const),
+            size: 1.5,
+            text: swing.type === "high" ? "SH" : "SL",
+          };
+        })
+        .filter(Boolean)
+        // Sort markers by time in ascending order (required by lightweight-charts)
+        .sort((a, b) => {
+          if (!a || !b) return 0;
+          return (a.time as number) - (b.time as number);
+        });
+
+      series.setMarkers(markers as any);
+    } catch (error) {
+      // Chart or series might be disposed, ignore the error
+      console.warn("SwingMarkers: Chart or series is disposed", error);
+      return;
+    }
 
     return () => {
-      series.setMarkers([]);
+      try {
+        if (series && series.setMarkers) {
+          series.setMarkers([]);
+        }
+      } catch (error) {
+        // Series might be disposed, ignore
+      }
     };
   }, [chart, series, swings, candles]);
 
