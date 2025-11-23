@@ -169,28 +169,6 @@ function StrategyConfigTab() {
                   onChange={(e) => handleUpdate("symbol_limit", e.target.value)}
                 />
               </div>
-              <div className="space-y-2">
-                <Label htmlFor="limit_market_cap">Min Market Cap (USD)</Label>
-                <Input
-                  id="limit_market_cap"
-                  type="number"
-                  value={config.limit_market_cap || ""}
-                  onChange={(e) =>
-                    handleUpdate("limit_market_cap", e.target.value)
-                  }
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="limit_volume_up">Min 24h Volume (USD)</Label>
-                <Input
-                  id="limit_volume_up"
-                  type="number"
-                  value={config.limit_volume_up || ""}
-                  onChange={(e) =>
-                    handleUpdate("limit_volume_up", e.target.value)
-                  }
-                />
-              </div>
             </div>
           </div>
 
