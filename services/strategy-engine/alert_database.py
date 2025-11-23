@@ -7,7 +7,7 @@ It uses PostgreSQL and stores alerts in the strategy_alerts table.
 
 import sys
 import os
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from datetime import datetime, timezone
 from sqlalchemy import text
 import pandas as pd
@@ -85,26 +85,20 @@ class AlertDatabase:
             logger.error(f"Error getting timeframe_id for {timeframe}: {e}")
             return None
     
-    def swing_pair_exists(self, asset: str, timeframe: str, swing_low: Tuple, swing_high: Tuple) -> bool:
+    def swing_pair_exists(self, asset: str, timeframe: str, swing_low_timestamp: datetime, swing_high_timestamp: datetime) -> bool:
         """
-        Check if a swing high/low pair already exists in the database.
+        Check if a swing high/low pair already exists in the database using timestamps.
         
         Args:
             asset: Asset symbol (e.g., "BTCUSDT")
             timeframe: Timeframe string (e.g., "4h", "30m")
-            swing_low: Tuple of (index, price) for swing low
-            swing_high: Tuple of (index, price) for swing high
+            swing_low_timestamp: Timestamp of swing low
+            swing_high_timestamp: Timestamp of swing high
             
         Returns:
             True if the pair exists, False otherwise
         """
-        if swing_low is None or swing_high is None:
-            return False
-        
-        try:
-            low_price = swing_low[1]
-            high_price = swing_high[1]
-        except (IndexError, TypeError):
+        if swing_low_timestamp is None or swing_high_timestamp is None:
             return False
         
         db = SessionLocal()
@@ -120,14 +114,14 @@ class AlertDatabase:
                     SELECT COUNT(*) FROM strategy_alerts
                     WHERE symbol_id = :symbol_id
                     AND timeframe_id = :timeframe_id
-                    AND ABS(swing_low_price - :low_price) < 0.01
-                    AND ABS(swing_high_price - :high_price) < 0.01
+                    AND swing_low_timestamp = :swing_low_timestamp
+                    AND swing_high_timestamp = :swing_high_timestamp
                 """),
                 {
                     "symbol_id": symbol_id,
                     "timeframe_id": timeframe_id,
-                    "low_price": float(low_price),
-                    "high_price": float(high_price)
+                    "swing_low_timestamp": swing_low_timestamp,
+                    "swing_high_timestamp": swing_high_timestamp
                 }
             )
             
@@ -148,9 +142,9 @@ class AlertDatabase:
         Save alerts to database, skipping those that already exist.
         
         Args:
-            alerts: List of alert dictionaries from _generate_alerts
+            alerts: List of alert dictionaries from generate_alerts
             asset_symbol: Asset symbol (e.g., "BTCUSDT")
-            df: Optional DataFrame with candle data to extract swing timestamps from indices
+            df: Optional DataFrame with candle data (kept for compatibility, not currently used)
             
         Returns:
             Dictionary with counts: {'saved': int, 'skipped': int, 'errors': int}
@@ -172,60 +166,55 @@ class AlertDatabase:
             for alert in alerts:
                 try:
                     timeframe = alert.get('timeframe', 'unknown')
-                    swing_low = alert.get('swing_low')
-                    swing_high = alert.get('swing_high')
                     
-                    # Check if pair already exists
-                    if self.swing_pair_exists(asset_symbol, timeframe, swing_low, swing_high):
-                        skipped_count += 1
-                        continue
+                    # Extract swing prices directly from alert dictionary
+                    low_price = alert.get('swing_low_price')
+                    high_price = alert.get('swing_high_price')
                     
-                    # Extract swing low/high data
-                    if swing_low is None or swing_high is None:
+                    # Validate required data
+                    if low_price is None and high_price is None:
                         error_count += 1
+                        logger.warning(f"Alert missing swing prices: low={low_price}, high={high_price}")
                         continue
                     
-                    low_price = swing_low[1]
-                    high_price = swing_high[1]
-                    
-                    # Extract swing timestamps from DataFrame using swing indices
-                    # Swing tuples are (index, price) where index is the DataFrame row index
+                    # Extract swing timestamps from alert dictionary
+                    # Timestamps are already provided as Unix timestamps in the alert
                     swing_low_timestamp = None
                     swing_high_timestamp = None
                     
-                    if df is not None and len(df) > 0:
-                        try:
-                            # Get indices from swing tuples
-                            low_idx = swing_low[0]
-                            high_idx = swing_high[0]
-                            
-                            # Get timestamp from DataFrame using the index
-                            # DataFrame is in chronological order (oldest first) after get_candle processing
-                            # Use unix timestamp column to get the candle timestamp
-                            if isinstance(low_idx, (int, float)) and 0 <= int(low_idx) < len(df):
-                                unix_ts = int(df.iloc[int(low_idx)]['unix'])
-                                swing_low_timestamp = self._unix_to_timestamp(unix_ts)
-                            
-                            if isinstance(high_idx, (int, float)) and 0 <= int(high_idx) < len(df):
-                                unix_ts = int(df.iloc[int(high_idx)]['unix'])
-                                swing_high_timestamp = self._unix_to_timestamp(unix_ts)
-                        except (KeyError, IndexError, ValueError, TypeError) as e:
-                            logger.warning(f"Could not extract swing timestamps from DataFrame: {e}")
+                    # Get timestamps from alert (already in Unix timestamp format)
+                    swing_low_timestamp_raw = alert.get('swing_low_timestamp')
+                    swing_high_timestamp_raw = alert.get('swing_high_timestamp')
                     
-                    # Fallback to alert data or current time if DataFrame extraction failed
-                    if swing_low_timestamp is None:
-                        swing_low_timestamp = alert.get('swing_low_timestamp')
-                        if isinstance(swing_low_timestamp, (int, float)):
-                            swing_low_timestamp = self._unix_to_timestamp(int(swing_low_timestamp))
-                        elif swing_low_timestamp is None:
+                    # Convert Unix timestamps to datetime objects
+                    if swing_low_timestamp_raw is not None:
+                        if isinstance(swing_low_timestamp_raw, (int, float)):
+                            swing_low_timestamp = self._unix_to_timestamp(int(swing_low_timestamp_raw))
+                        elif isinstance(swing_low_timestamp_raw, datetime):
+                            swing_low_timestamp = swing_low_timestamp_raw
+                        else:
+                            logger.warning(f"Invalid swing_low_timestamp format: {swing_low_timestamp_raw}")
                             swing_low_timestamp = datetime.now()
+                    else:
+                        logger.warning(f"Missing swing_low_timestamp in alert, using current time")
+                        swing_low_timestamp = datetime.now()
                     
-                    if swing_high_timestamp is None:
-                        swing_high_timestamp = alert.get('swing_high_timestamp')
-                        if isinstance(swing_high_timestamp, (int, float)):
-                            swing_high_timestamp = self._unix_to_timestamp(int(swing_high_timestamp))
-                        elif swing_high_timestamp is None:
+                    if swing_high_timestamp_raw is not None:
+                        if isinstance(swing_high_timestamp_raw, (int, float)):
+                            swing_high_timestamp = self._unix_to_timestamp(int(swing_high_timestamp_raw))
+                        elif isinstance(swing_high_timestamp_raw, datetime):
+                            swing_high_timestamp = swing_high_timestamp_raw
+                        else:
+                            logger.warning(f"Invalid swing_high_timestamp format: {swing_high_timestamp_raw}")
                             swing_high_timestamp = datetime.now()
+                    else:
+                        logger.warning(f"Missing swing_high_timestamp in alert, using current time")
+                        swing_high_timestamp = datetime.now()
+                    
+                    # Check if pair already exists using timestamps
+                    if self.swing_pair_exists(asset_symbol, timeframe, swing_low_timestamp, swing_high_timestamp):
+                        skipped_count += 1
+                        continue
                     
                     timeframe_id = self._get_timeframe_id(db, timeframe)
                     if not timeframe_id:

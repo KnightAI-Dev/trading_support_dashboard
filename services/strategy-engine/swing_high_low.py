@@ -25,14 +25,14 @@ def calculate_swing_points(
 
     Args:
         df: DataFrame with 'high' and 'low' columns (case-sensitive lowercase).
-            Must contain numeric data.
+            Must contain numeric data. Should also have 'unix' column for datetime.
         window: Number of bars to look back and forward for comparison.
                 A window of 2 means 2 bars before and 2 bars after (total 5 bars).
                 Must be >= 1.
 
     Returns:
         Tuple of (swing_high_list, swing_low_list) where each list contains
-        tuples of (index, price). Index corresponds to DataFrame row index.
+        tuples of (datetime, price). datetime is Unix timestamp from the 'unix' column.
 
     Raises:
         ValueError: If window is invalid or DataFrame structure is invalid.
@@ -127,16 +127,19 @@ def calculate_swing_points(
             (df_work['low'].notna())
         )
         
-        # Extract swing points as (index, price) tuples using vectorized operations
+        # Extract swing points as (datetime, price) tuples using vectorized operations
         # float() handles both Decimal and numeric types automatically
+        # Get datetime from 'unix' column if available, otherwise use 0
+        has_unix = 'unix' in df_work.columns
+        
         swing_high_list = [
-            (idx, float(df_work['high'].iloc[idx]))
+            (int(df_work['unix'].iloc[idx]) if has_unix and pd.notna(df_work['unix'].iloc[idx]) else 0, float(df_work['high'].iloc[idx]))
             for idx in df_work.index[is_swing_high]
             if pd.notna(df_work['high'].iloc[idx])
         ]
         
         swing_low_list = [
-            (idx, float(df_work['low'].iloc[idx]))
+            (int(df_work['unix'].iloc[idx]) if has_unix and pd.notna(df_work['unix'].iloc[idx]) else 0, float(df_work['low'].iloc[idx]))
             for idx in df_work.index[is_swing_low]
             if pd.notna(df_work['low'].iloc[idx])
         ]
@@ -163,19 +166,19 @@ def filter_between(
     points in points_main, keeping either the minimum or maximum value in each interval.
     
     Args:
-        points_main: List of (index, value) tuples representing boundary points (highs or lows).
-                    Must be sorted by index.
-        points_other: List of (index, value) tuples representing points to filter 
-                     (opposite of main). Must be sorted by index.
+        points_main: List of (datetime, price) tuples representing boundary points (highs or lows).
+                    Must be sorted by datetime.
+        points_other: List of (datetime, price) tuples representing points to filter 
+                     (opposite of main). Must be sorted by datetime.
         keep: "min" to keep lowest point in each interval, "max" to keep highest.
               Default is "min".
         
     Returns:
-        Filtered list of (index, value) tuples, sorted by index.
+        Filtered list of (datetime, price) tuples, sorted by datetime.
         
     Example:
-        points_main = [(0, 100), (10, 110), (20, 105)]
-        points_other = [(2, 95), (5, 98), (12, 97), (15, 99)]
+        points_main = [(1000, 100), (2000, 110), (3000, 105)]
+        points_other = [(1200, 95), (1500, 98), (2200, 97), (2500, 99)]
         keep = "min"
         Returns points between each pair of main points, keeping the minimum in each interval.
     """
@@ -194,7 +197,7 @@ def filter_between(
     if len(points_main) < 2:
         return sorted(points_other.copy(), key=lambda x: x[0]) if points_other else []
     
-    # Ensure points are sorted by index
+    # Ensure points are sorted by datetime
     points_main = sorted(points_main, key=lambda x: x[0])
     points_other = sorted(points_other, key=lambda x: x[0])
     
@@ -202,23 +205,25 @@ def filter_between(
     
     # Process each interval between consecutive main points
     for i in range(len(points_main) - 1):
-        start_idx = points_main[i][0]
-        end_idx = points_main[i + 1][0]
+        start_dt = points_main[i][0]  # datetime of start point
+        end_dt = points_main[i + 1][0]  # datetime of end point
         
-        # Skip if indices are invalid
-        if start_idx >= end_idx:
+        # Skip if datetimes are invalid
+        if start_dt >= end_dt:
             continue
         
         # Collect opposite points inside (start, end) - exclusive boundaries
+        # Compare based on datetime (position 0)
         inside = [
             p for p in points_other 
-            if start_idx < p[0] < end_idx
+            if start_dt < p[0] < end_dt
         ]
         
         if not inside:
             continue
         
         # Select the extreme point based on keep parameter
+        # p[1] is the price value
         if keep == "min":
             selected = min(inside, key=lambda x: x[1])
         else:  # keep == "max"
@@ -239,7 +244,7 @@ def filter_between(
         if last_point not in filtered:
             filtered.append(last_point)
     
-    # Return sorted by index to ensure consistent ordering
+    # Return sorted by datetime to ensure consistent ordering
     return sorted(filtered, key=lambda x: x[0])
 
 
@@ -254,12 +259,12 @@ def enforce_strict_alternation(
     This ensures that swing points alternate: high, low, high, low, etc.
     
     Args:
-        highs: List of (index, price) tuples for swing highs.
-        lows: List of (index, price) tuples for swing lows.
+        highs: List of (datetime, price) tuples for swing highs.
+        lows: List of (datetime, price) tuples for swing lows.
         
     Returns:
         Tuple of (filtered_highs, filtered_lows) with strict alternation enforced.
-        Both lists are sorted by index.
+        Both lists are sorted by datetime.
     """
     # Input validation
     if not highs and not lows:
@@ -268,13 +273,14 @@ def enforce_strict_alternation(
     if not isinstance(highs, list) or not isinstance(lows, list):
         return [], []
     
-    # Sort by index to ensure chronological order
+    # Sort by datetime to ensure chronological order
     highs = sorted(highs, key=lambda x: x[0])
     lows = sorted(lows, key=lambda x: x[0])
     
     # Merge lists with type markers for easier processing
-    merged = [(idx, val, 'H') for idx, val in highs] + \
-             [(idx, val, 'L') for idx, val in lows]
+    # highs and lows are (datetime, price) tuples
+    merged = [(dt, val, 'H') for dt, val in highs] + \
+             [(dt, val, 'L') for dt, val in lows]
     merged.sort(key=lambda x: x[0])
     
     if not merged:
@@ -284,9 +290,9 @@ def enforce_strict_alternation(
     final_lows = []
     last_type = None
     
-    for idx, val, point_type in merged:
+    for dt, val, point_type in merged:
         # Validate tuple structure
-        if not isinstance(idx, (int, np.integer)) or not isinstance(val, (int, float, np.floating)):
+        if not isinstance(dt, (int, np.integer)) or not isinstance(val, (int, float, np.floating)):
             continue
         
         # If two of the same type appear consecutively, keep only the more extreme one
@@ -294,17 +300,17 @@ def enforce_strict_alternation(
             if point_type == 'H':
                 # For highs, keep the higher one
                 if final_highs and val > final_highs[-1][1]:
-                    final_highs[-1] = (idx, val)
+                    final_highs[-1] = (dt, val)
             else:  # point_type == 'L'
                 # For lows, keep the lower one
                 if final_lows and val < final_lows[-1][1]:
-                    final_lows[-1] = (idx, val)
+                    final_lows[-1] = (dt, val)
         else:
             # Different type - add to appropriate list
             if point_type == 'H':
-                final_highs.append((idx, val))
+                final_highs.append((dt, val))
             else:  # point_type == 'L'
-                final_lows.append((idx, val))
+                final_lows.append((dt, val))
         
         last_type = point_type
     
@@ -323,7 +329,7 @@ def filter_rate(
     requirement, helping to filter out noise and keep only significant swings.
     
     Rules:
-    1. For each swing high, compare with nearest left and right swing lows
+    1. For each swing high, compare with nearest left and right swing lows based on datetime
     2. Calculate percentage move from each low to the high
     3. If both moves are < rate: remove the high, keep the lower of the two lows
     4. If only left move < rate: remove the high and the left low
@@ -332,13 +338,13 @@ def filter_rate(
     7. Finally, enforce strict alternation
     
     Args:
-        highs: List of (index, price) tuples for swing highs. Should be sorted by index.
-        lows: List of (index, price) tuples for swing lows. Should be sorted by index.
+        highs: List of (datetime, price) tuples for swing highs. Should be sorted by datetime.
+        lows: List of (datetime, price) tuples for swing lows. Should be sorted by datetime.
         rate: Minimum percentage move required (e.g., 0.03 = 3%). Must be > 0.
         
     Returns:
         Tuple of (filtered_highs, filtered_lows) with points that meet the rate requirement.
-        Both lists are sorted by index.
+        Both lists are sorted by datetime.
     """
     # Input validation
     if not highs and not lows:
@@ -353,6 +359,7 @@ def filter_rate(
         return highs.copy() if highs else [], lows.copy() if lows else []
     
     # Create copies to avoid modifying original lists
+    # Sort by datetime (position 0)
     highs = sorted(highs, key=lambda x: x[0])
     lows = sorted(lows, key=lambda x: x[0])
     
@@ -361,25 +368,29 @@ def filter_rate(
     clean_lows = lows.copy()  # Start with all lows, remove as needed
     
     # Process each swing high
-    for h_idx, h_val in highs:
+    for h_dt, h_val in highs:
         # Validate high tuple
-        if not isinstance(h_idx, (int, np.integer)) or not isinstance(h_val, (int, float, np.floating)):
+        if not isinstance(h_dt, (int, np.integer)) or not isinstance(h_val, (int, float, np.floating)):
             continue
         
         if h_val <= 0:
             continue  # Invalid price
         
-        # Find nearest left low (before this high)
-        left_candidates = [l for l in clean_lows if l[0] < h_idx]
-        left_low = left_candidates[-1] if left_candidates else None
+        # Find nearest left low (after this high - later in time)
+        # clean_lows is sorted by datetime ascending, so lows after h_dt are also sorted ascending
+        # The first one (index 0) is the nearest one after the high
+        left_candidates = [l for l in clean_lows if l[0] > h_dt]
+        left_low = left_candidates[0] if left_candidates else None
         
-        # Find nearest right low (after this high)
-        right_candidates = [l for l in clean_lows if l[0] > h_idx]
-        right_low = right_candidates[0] if right_candidates else None
+        # Find nearest right low (before this high - earlier in time)
+        # clean_lows is sorted by datetime ascending, so lows before h_dt are also sorted ascending
+        # The last one (index -1) is the nearest one before the high
+        right_candidates = [l for l in clean_lows if l[0] < h_dt]
+        right_low = right_candidates[-1] if right_candidates else None
         
         # Edge case: keep high if no left OR right low exists
         if left_low is None or right_low is None:
-            clean_highs.append((h_idx, h_val))
+            clean_highs.append((h_dt, h_val))
             continue
         
         # Validate low prices
@@ -407,7 +418,7 @@ def filter_rate(
             ]
             if lower_low not in clean_lows:
                 clean_lows.append(lower_low)
-                clean_lows.sort(key=lambda x: x[0])  # Maintain sorted order
+                clean_lows.sort(key=lambda x: x[0])  # Maintain sorted order by datetime
             continue
         
         # CASE 2: Only left side fails the rate requirement
@@ -425,7 +436,7 @@ def filter_rate(
             continue  # Don't add high to clean_highs
         
         # CASE 4: Both rates meet the requirement → keep the high
-        clean_highs.append((h_idx, h_val))
+        clean_highs.append((h_dt, h_val))
     
     # Final step: enforce strict alternation to ensure proper high-low-high-low pattern
     clean_highs, clean_lows = enforce_strict_alternation(clean_highs, clean_lows)
