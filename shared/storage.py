@@ -268,6 +268,8 @@ class StorageService:
                 FROM ohlcv_candles oc
                 INNER JOIN symbols s ON oc.symbol_id = s.symbol_id
                 INNER JOIN timeframe t ON oc.timeframe_id = t.timeframe_id
+                WHERE s.is_active = TRUE
+                AND s.removed_at IS NULL
                 ORDER BY s.symbol_name, t.tf_name
             """
             
@@ -374,6 +376,8 @@ class StorageService:
                     ORDER BY md2.timestamp DESC
                     LIMIT 1
                 ) md ON true
+                WHERE s.is_active = TRUE
+                AND s.removed_at IS NULL
                 ORDER BY lp.symbol
             """)
             

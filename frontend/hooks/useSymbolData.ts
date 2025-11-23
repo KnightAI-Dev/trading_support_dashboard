@@ -105,6 +105,21 @@ export function useSymbolData() {
     fetchSymbolData();
   }, [fetchSymbolData]);
 
+  // Listen for ingestion config updates to refresh symbol data
+  useEffect(() => {
+    const handleRefresh = () => {
+      fetchSymbolData();
+    };
+
+    window.addEventListener('refreshMarketData', handleRefresh);
+    window.addEventListener('ingestionConfigUpdated', handleRefresh);
+
+    return () => {
+      window.removeEventListener('refreshMarketData', handleRefresh);
+      window.removeEventListener('ingestionConfigUpdated', handleRefresh);
+    };
+  }, [fetchSymbolData]);
+
   // Subscribe to WebSocket symbol updates
   useEffect(() => {
     const unsubscribe = subscribeToSymbolUpdates((update) => {

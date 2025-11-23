@@ -220,25 +220,40 @@ export default function DashboardPage() {
   const symbolData = Array.isArray(symbols) ? symbols : [];
 
   // Load symbol/timeframe metadata
-  useEffect(() => {
-    let isMounted = true;
-
-    const loadMetadata = async () => {
+  const loadMetadata = useCallback(async () => {
       try {
         const metadata = await fetchMarketMetadata();
-        if (!isMounted) return;
         setMarketMetadata(metadata);
       } catch (error) {
         console.error("Error loading market metadata:", error);
       }
+  }, [setMarketMetadata]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const load = async () => {
+      await loadMetadata();
     };
 
     loadMetadata();
 
+    // Listen for ingestion config updates
+    const handleRefresh = () => {
+      if (isMounted) {
+        loadMetadata();
+      }
+    };
+
+    window.addEventListener('refreshMarketData', handleRefresh);
+    window.addEventListener('ingestionConfigUpdated', handleRefresh);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('refreshMarketData', handleRefresh);
+      window.removeEventListener('ingestionConfigUpdated', handleRefresh);
     };
-  }, [setMarketMetadata]);
+  }, [loadMetadata]);
 
   useEffect(() => {
     if (availableSymbols.length && !availableSymbols.includes(selectedSymbol)) {

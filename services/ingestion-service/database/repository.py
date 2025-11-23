@@ -101,10 +101,60 @@ def get_timeframe_id(db: Session, timeframe: str) -> Optional[int]:
         return None
 
 
-def get_qualified_symbols(db: Session) -> List[str]:
-    """Get active symbols from database that meet market cap and volume criteria"""
+def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
+    """Get symbols from database that meet market cap and volume criteria
+    Filters by ingestion config values from ingestion_config table.
+    Also reactivates any inactive symbols that now meet the criteria.
+    
+    Returns:
+        Tuple of (qualified_symbols_list, reactivated_symbols_list)
+    """
     try:
-        # Query active symbols with latest market_data that meet criteria
+        # Get ingestion config thresholds
+        min_volume = get_ingestion_config_value(db, "limit_volume_up", default_value=50000000.0)
+        min_market_cap = get_ingestion_config_value(db, "limit_market_cap", default_value=50000000.0)
+        
+        min_volume = min_volume if min_volume is not None else 50000000.0
+        min_market_cap = min_market_cap if min_market_cap is not None else 50000000.0
+        
+        # Reactivate inactive symbols that now meet criteria (bulk update - more efficient)
+        reactivated_result = db.execute(
+            text("""
+                UPDATE symbols AS s
+                SET is_active = TRUE,
+                    removed_at = NULL,
+                    updated_at = NOW()
+                FROM (
+                    SELECT DISTINCT ON (symbol_id)
+                        symbol_id, market_cap, volume_24h
+                    FROM market_data
+                    WHERE market_cap IS NOT NULL
+                      AND volume_24h IS NOT NULL
+                    ORDER BY symbol_id, timestamp DESC
+                ) md
+                WHERE s.symbol_id = md.symbol_id
+                  AND md.market_cap >= :min_market_cap
+                  AND md.volume_24h >= :min_volume
+                  AND s.is_active = FALSE
+                RETURNING s.symbol_id, s.symbol_name
+            """),
+            {
+                "min_market_cap": min_market_cap,
+                "min_volume": min_volume
+            }
+        ).fetchall()
+        
+        reactivated_count = len(reactivated_result)
+        reactivated_symbols = []
+        if reactivated_count > 0:
+            # Clean reactivated symbol names
+            for row in reactivated_result:
+                symbol_name = row[1]
+                if symbol_name:
+                    cleaned = symbol_name.lstrip("@").upper()
+                    reactivated_symbols.append(cleaned)
+        
+        # Now get all qualified symbols (including newly reactivated ones)
         result = db.execute(
             text("""
                 SELECT s.symbol_name
@@ -118,8 +168,15 @@ def get_qualified_symbols(db: Session) -> List[str]:
                     ORDER BY symbol_id, timestamp DESC
                 ) md ON s.symbol_id = md.symbol_id
                 WHERE s.is_active = TRUE
+                AND s.removed_at IS NULL
+                AND md.market_cap >= :min_market_cap
+                AND md.volume_24h >= :min_volume
                 ORDER BY md.market_cap DESC, s.symbol_name;
-            """)
+            """),
+            {
+                "min_market_cap": min_market_cap,
+                "min_volume": min_volume
+            }
         ).fetchall()
         
         # Clean symbols: remove @ prefix if present and ensure uppercase
@@ -127,7 +184,6 @@ def get_qualified_symbols(db: Session) -> List[str]:
         for row in result:
             symbol = row[0]
             if symbol:
-                # Remove @ prefix if present (from WebSocket stream names)
                 cleaned = symbol.lstrip("@").upper()
                 if cleaned != symbol:
                     logger.warning(
@@ -137,11 +193,28 @@ def get_qualified_symbols(db: Session) -> List[str]:
                     )
                 symbols.append(cleaned)
         
-        logger.info("qualified_symbols_found", count=len(symbols))
-        return symbols
+        # Commit only after both operations succeed
+        if reactivated_count > 0:
+            db.commit()
+            logger.info(
+                "symbols_reactivated",
+                count=reactivated_count,
+                symbols=reactivated_symbols[:10] if len(reactivated_symbols) > 10 else reactivated_symbols,
+                message=f"Reactivated {reactivated_count} previously inactive symbols that now meet criteria"
+            )
+        
+        logger.info(
+            "qualified_symbols_found",
+            count=len(symbols),
+            reactivated_count=reactivated_count,
+            min_market_cap=min_market_cap,
+            min_volume=min_volume
+        )
+        return symbols, reactivated_symbols
     except Exception as e:
         logger.error("qualified_symbols_error", error=str(e), exc_info=True)
-        return DEFAULT_SYMBOLS
+        db.rollback()
+        return DEFAULT_SYMBOLS, []
 
 
 def get_ingestion_timeframes(db: Session) -> List[str]:

@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 import websockets
-from websockets.exceptions import ConnectionClosed, WebSocketException
+from websockets.exceptions import ConnectionClosed, ConnectionClosedOK, WebSocketException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from decimal import Decimal
@@ -52,12 +52,47 @@ class BinanceWebSocketService:
         self.total_batches_flushed = 0
         self.total_candles_batched = 0
         self.max_url_length = 2000  # Maximum URL length (leaving room for base URL)
+        self.current_symbols = []  # Store current symbols for dynamic updates
+        self.current_timeframes = []  # Store current timeframes for dynamic updates
+        self._symbols_lock = asyncio.Lock()  # Lock for thread-safe symbol updates
         
     async def __aenter__(self):
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
+    
+    async def update_symbols(self, new_symbols: List[str], new_timeframes: List[str]):
+        """Update symbols and timeframes, triggering immediate reconnection with new subscriptions
+        
+        Args:
+            new_symbols: New list of symbols to subscribe to
+            new_timeframes: New list of timeframes to subscribe to
+        """
+        async with self._symbols_lock:
+            old_symbols = set(self.current_symbols)
+            new_symbols_set = set(new_symbols)
+            
+            self.current_symbols = new_symbols
+            self.current_timeframes = new_timeframes
+            
+            added = new_symbols_set - old_symbols
+            removed = old_symbols - new_symbols_set
+            
+            if added or removed:
+                logger.info(
+                    "websocket_symbols_updating",
+                    old_count=len(old_symbols),
+                    new_count=len(new_symbols),
+                    added_count=len(added),
+                    removed_count=len(removed),
+                    added_symbols=list(added) if len(added) <= 10 else list(added)[:10],
+                    removed_symbols=list(removed) if len(removed) <= 10 else list(removed)[:10]
+                )
+                
+                # Close current connections to trigger reconnection with new symbols
+                await self.close()
+                logger.info("websocket_connections_closed_for_symbol_update")
     
     async def close(self):
         """Close all WebSocket connections"""
@@ -635,7 +670,13 @@ class BinanceWebSocketService:
                         # Reconnect with exponential backoff
                         await asyncio.sleep(self.reconnect_delay)
                         self.reconnect_delay = min(self.reconnect_delay * 2, self.max_reconnect_delay)
-                        success = await self.connect_and_subscribe(symbols, timeframes)
+                        
+                        # Get current symbols/timeframes (may have been updated)
+                        async with self._symbols_lock:
+                            current_symbols = self.current_symbols
+                            current_timeframes = self.current_timeframes
+                        
+                        success = await self.connect_and_subscribe(current_symbols, current_timeframes)
                         if not success:
                             continue
                         # Recreate database session after reconnection
@@ -708,19 +749,47 @@ class BinanceWebSocketService:
                         
                         # Get message from the first completed connection
                         message_task = done.pop()
-                        message_str = await message_task
+                        try:
+                            message_str = await message_task
+                        except ConnectionClosedOK:
+                            # Normal closure - connection was closed intentionally
+                            logger.debug("WebSocket connection closed normally during message receive")
+                            # Cancel pending tasks
+                            for task in pending:
+                                task.cancel()
+                                try:
+                                    await task
+                                except (asyncio.CancelledError, ConnectionClosedOK):
+                                    pass
+                            # Close and reconnect
+                            await self.close()
+                            await asyncio.sleep(self.reconnect_delay)
+                            continue
                         
                         # Cancel pending tasks (we only process one message at a time)
                         for task in pending:
                             task.cancel()
                             try:
                                 await task
-                            except asyncio.CancelledError:
+                            except (asyncio.CancelledError, ConnectionClosedOK):
                                 pass
                     except asyncio.TimeoutError:
                         # Check shutdown on timeout
                         if shutdown_event and shutdown_event.is_set():
                             break
+                        continue
+                    except ConnectionClosedOK:
+                        # Normal WebSocket closure (status 1000) - not an error
+                        # This happens when connections are closed intentionally (e.g., during symbol updates)
+                        logger.debug("WebSocket connection closed normally, will reconnect")
+                        await self.close()
+                        await asyncio.sleep(self.reconnect_delay)
+                        continue
+                    except (ConnectionClosed, WebSocketException) as e:
+                        # Abnormal WebSocket closure or error
+                        logger.warning(f"WebSocket connection closed abnormally: {e}")
+                        await self.close()
+                        await asyncio.sleep(self.reconnect_delay)
                         continue
                     except Exception as e:
                         logger.error(f"Error receiving WebSocket message: {e}", exc_info=True)
@@ -876,6 +945,11 @@ class BinanceWebSocketService:
             timeframes: List of timeframes to subscribe to
             shutdown_event: Optional asyncio.Event to signal shutdown
         """
+        # Store initial symbols and timeframes
+        async with self._symbols_lock:
+            self.current_symbols = symbols
+            self.current_timeframes = timeframes
+        
         logger.info(f"Starting WebSocket service for {len(symbols)} symbols, {len(timeframes)} timeframes")
         
         consecutive_failures = 0
@@ -883,9 +957,14 @@ class BinanceWebSocketService:
         
         while shutdown_event is None or not shutdown_event.is_set():
             try:
-                if await self.connect_and_subscribe(symbols, timeframes):
+                # Get current symbols/timeframes (may have been updated)
+                async with self._symbols_lock:
+                    current_symbols = self.current_symbols
+                    current_timeframes = self.current_timeframes
+                
+                if await self.connect_and_subscribe(current_symbols, current_timeframes):
                     consecutive_failures = 0  # Reset on successful connection
-                    await self.listen_and_process(symbols, timeframes, shutdown_event)
+                    await self.listen_and_process(current_symbols, current_timeframes, shutdown_event)
                 else:
                     consecutive_failures += 1
             except KeyboardInterrupt:

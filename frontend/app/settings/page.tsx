@@ -48,7 +48,7 @@ export default function SettingsPage() {
             <TabsTrigger value="ingestion">Ingestion Config</TabsTrigger>
           </TabsList>
           <TabsContent value="strategy">
-            <StrategyConfigTab />
+        <StrategyConfigTab />
           </TabsContent>
           <TabsContent value="ingestion">
             <IngestionConfigTab />
@@ -420,8 +420,33 @@ function IngestionConfigTab() {
         configsToSave[key] = String(value);
       }
       await updateIngestionConfigs(configsToSave);
-      setSaveMessage("Ingestion configuration saved successfully!");
+      
+      // Trigger ingestion service to reload symbols
+      try {
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        await fetch(`${API_URL}/ingestion-config/reload`, {
+          method: "POST",
+        });
+      } catch (reloadError) {
+        console.warn("Failed to trigger ingestion reload:", reloadError);
+        // Don't fail the save operation if reload fails
+      }
+      
+      setSaveMessage("Ingestion configuration saved successfully! Symbols will be updated.");
       setTimeout(() => setSaveMessage(null), 3000);
+      
+      // Wait a few seconds for ingestion service to update symbols, then refresh frontend
+      setTimeout(() => {
+        // Dispatch custom event to trigger refresh in other components
+        window.dispatchEvent(new CustomEvent('ingestionConfigUpdated'));
+        
+        // Also refresh if we're on the dashboard
+        if (typeof window !== 'undefined') {
+          // Trigger a page refresh or reload market metadata
+          const refreshEvent = new CustomEvent('refreshMarketData');
+          window.dispatchEvent(refreshEvent);
+        }
+      }, 3000); // Wait 3 seconds for ingestion service to process
     } catch (error) {
       console.error("Error saving ingestion config:", error);
       setSaveMessage("Error saving configuration");

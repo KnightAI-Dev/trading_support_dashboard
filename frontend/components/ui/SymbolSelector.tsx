@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useMarketStore } from "@/stores/useMarketStore";
 import { fetchMarketMetadata } from "@/lib/api";
 import {
@@ -22,33 +22,45 @@ export function SymbolSelector() {
   
   const [isLoadingSymbols, setIsLoadingSymbols] = useState(false);
 
+  const loadSymbols = useCallback(async () => {
+    setIsLoadingSymbols(true);
+    try {
+      const metadata = await fetchMarketMetadata();
+      setMarketMetadata(metadata);
+    } catch (error) {
+      console.error("Error loading symbols from backend:", error);
+    } finally {
+      setIsLoadingSymbols(false);
+    }
+  }, [setMarketMetadata]);
+
   // Fetch symbols from backend on mount
   useEffect(() => {
     let isMounted = true;
 
-    const loadSymbols = async () => {
-      setIsLoadingSymbols(true);
-      try {
-        const metadata = await fetchMarketMetadata();
-        if (isMounted) {
-          setMarketMetadata(metadata);
-        }
-      } catch (error) {
-        console.error("Error loading symbols from backend:", error);
-      } finally {
-        if (isMounted) {
-          setIsLoadingSymbols(false);
-        }
-      }
+    const load = async () => {
+      await loadSymbols();
     };
 
     // Always fetch from backend to get latest symbols
+    load();
+
+    // Listen for ingestion config updates
+    const handleRefresh = () => {
+      if (isMounted) {
     loadSymbols();
+      }
+    };
+
+    window.addEventListener('refreshMarketData', handleRefresh);
+    window.addEventListener('ingestionConfigUpdated', handleRefresh);
 
     return () => {
       isMounted = false;
+      window.removeEventListener('refreshMarketData', handleRefresh);
+      window.removeEventListener('ingestionConfigUpdated', handleRefresh);
     };
-  }, [setMarketMetadata]);
+  }, [loadSymbols]);
 
   // Use only backend symbols - no fallback to defaults
   // Only show symbols if we have data from backend

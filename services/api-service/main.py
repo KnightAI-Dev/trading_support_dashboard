@@ -679,19 +679,22 @@ async def update_ingestion_config(
 ):
     """Update an ingestion configuration value"""
     try:
-        with StorageService() as storage:
-            success = storage.update_ingestion_config(
-                config_key=config_key,
-                config_value=config_update.config_value,
-                updated_by="api-service"  # Could be enhanced to track user
-            )
-            if not success:
-                raise HTTPException(status_code=500, detail="Failed to update config")
-            return {"success": True, "config_key": config_key, "config_value": config_update.config_value}
+        storage = StorageService()
+        storage.db = db  # Use the provided session from FastAPI dependency
+        success = storage.update_ingestion_config(
+            config_key=config_key,
+            config_value=config_update.config_value,
+            updated_by="api-service"  # Could be enhanced to track user
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update config")
+        # StorageService.update_ingestion_config already commits the transaction
+        return {"success": True, "config_key": config_key, "config_value": config_update.config_value}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating ingestion config: {e}")
+        db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -702,18 +705,38 @@ async def update_ingestion_configs(
 ):
     """Update multiple ingestion configuration values at once"""
     try:
-        with StorageService() as storage:
-            success = storage.update_ingestion_configs(
-                configs=bulk_update.configs,
-                updated_by="api-service"  # Could be enhanced to track user
-            )
-            if not success:
-                raise HTTPException(status_code=500, detail="Failed to update configs")
-            return {"success": True, "updated_count": len(bulk_update.configs)}
+        storage = StorageService()
+        storage.db = db  # Use the provided session from FastAPI dependency
+        success = storage.update_ingestion_configs(
+            configs=bulk_update.configs,
+            updated_by="api-service"  # Could be enhanced to track user
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update configs")
+        # StorageService.update_ingestion_configs already commits the transaction
+        return {"success": True, "updated_count": len(bulk_update.configs)}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error updating ingestion configs: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ingestion-config/reload")
+async def reload_ingestion_config(db: Session = Depends(get_db)):
+    """Trigger ingestion service to reload symbols based on updated config"""
+    try:
+        # Publish event via Redis to notify ingestion service
+        from shared.redis_client import publish_event
+        publish_event("ingestion_config_changed", {
+            "timestamp": datetime.now().isoformat(),
+            "message": "Ingestion config updated, symbols need to be re-evaluated"
+        })
+        logger.info("Ingestion config reload triggered via API")
+        return {"success": True, "message": "Ingestion service will reload symbols"}
+    except Exception as e:
+        logger.error(f"Error triggering ingestion reload: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

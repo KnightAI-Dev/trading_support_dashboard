@@ -7,6 +7,7 @@ import os
 import asyncio
 import signal
 from datetime import datetime, timedelta, timezone
+from typing import List
 from sqlalchemy import text
 import structlog
 
@@ -14,7 +15,7 @@ import structlog
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
 from shared.database import init_db, DatabaseManager
-from shared.redis_client import publish_event
+from shared.redis_client import publish_event, get_redis
 import logging
 
 # Configure standard logging
@@ -57,6 +58,11 @@ from utils.gap_detection import backfill_all_symbols_timeframes
 
 # Global shutdown flag
 shutdown_event = asyncio.Event()
+
+# Global variables for symbol management
+current_symbols = []
+symbols_lock = asyncio.Lock()
+ws_service_instance = None  # Global reference to WebSocket service for dynamic updates
 
 
 async def periodic_market_data_update():
@@ -124,8 +130,10 @@ def setup_signal_handlers():
     signal.signal(signal.SIGINT, signal_handler)
 
 
-async def gap_detection_task(symbols: list, timeframes: list):
-    """Periodic task to backfill recent candles for all symbols and timeframes"""
+async def gap_detection_task(initial_symbols: list, timeframes: list):
+    """Periodic task to backfill recent candles for all symbols and timeframes
+    Uses current_symbols global variable to pick up config changes
+    """
     while not shutdown_event.is_set():
         try:
             if shutdown_event.is_set():
@@ -133,11 +141,15 @@ async def gap_detection_task(symbols: list, timeframes: list):
             
             logger.info("gap_detection_starting")
             
+            # Use current_symbols if available, otherwise use initial_symbols
+            async with symbols_lock:
+                symbols_to_use = current_symbols if current_symbols else initial_symbols
+            
             async with BinanceIngestionService() as binance_service:
                 # Simple approach: fetch recent 400 candles and insert missing ones
                 total_inserted = await backfill_all_symbols_timeframes(
                     binance_service=binance_service,
-                    symbols=symbols,
+                    symbols=symbols_to_use,
                     timeframes=timeframes,
                     limit=400,
                     max_retries=3
@@ -161,6 +173,154 @@ async def gap_detection_task(symbols: list, timeframes: list):
                 exc_info=True
             )
             await asyncio.sleep(300)  # Wait 5 minutes before retrying
+
+
+async def backfill_reactivated_symbols(symbols: List[str]):
+    """Backfill OHLCV data for newly reactivated symbols"""
+    if not symbols:
+        return
+    
+    try:
+        logger.info(
+            "backfilling_reactivated_symbols_starting",
+            symbol_count=len(symbols),
+            symbols=symbols[:10] if len(symbols) > 10 else symbols
+        )
+        
+        with DatabaseManager() as db:
+            timeframes = get_ingestion_timeframes(db)
+        
+        async with BinanceIngestionService() as binance_service:
+            total_inserted = await backfill_all_symbols_timeframes(
+                binance_service=binance_service,
+                symbols=symbols,
+                timeframes=timeframes,
+                limit=400,  # Backfill recent 400 candles
+                max_retries=3
+            )
+            
+            logger.info(
+                "reactivated_symbols_backfilled",
+                symbol_count=len(symbols),
+                total_candles_inserted=total_inserted
+            )
+    except Exception as e:
+        logger.error(
+            "error_backfilling_reactivated_symbols",
+            error=str(e),
+            exc_info=True
+        )
+
+
+async def listen_for_config_changes(shutdown_event: asyncio.Event):
+    """Listen for ingestion config changes and reload qualified symbols"""
+    redis_client = get_redis()
+    if not redis_client:
+        logger.warning("Redis not available, config change listener disabled")
+        return
+    
+    pubsub = redis_client.pubsub()
+    pubsub.subscribe("ingestion_config_changed")
+    
+    logger.info("config_change_listener_started")
+    
+    while not shutdown_event.is_set():
+        try:
+            # Use asyncio.to_thread for blocking Redis call
+            message = await asyncio.to_thread(
+                pubsub.get_message,
+                ignore_subscribe_messages=True,
+                timeout=1.0
+            )
+            
+            if message and message.get("type") == "message":
+                try:
+                    import json
+                    data = json.loads(message["data"])
+                    logger.info(
+                        "ingestion_config_changed_received",
+                        timestamp=data.get("timestamp"),
+                        message=data.get("message")
+                    )
+                    
+                    # Reload qualified symbols with new config
+                    with DatabaseManager() as db:
+                        new_symbols, reactivated_symbols = get_qualified_symbols(db)
+                        
+                        async with symbols_lock:
+                            global current_symbols
+                            old_symbols = set(current_symbols)
+                            new_symbols_set = set(new_symbols)
+                            current_symbols = new_symbols
+                            
+                            added = new_symbols_set - old_symbols
+                            removed = old_symbols - new_symbols_set
+                            
+                            logger.info(
+                                "qualified_symbols_reloaded",
+                                old_count=len(old_symbols),
+                                new_count=len(new_symbols),
+                                added_count=len(added),
+                                removed_count=len(removed),
+                                reactivated_count=len(reactivated_symbols),
+                                added_symbols=list(added) if len(added) <= 10 else list(added)[:10],
+                                removed_symbols=list(removed) if len(removed) <= 10 else list(removed)[:10],
+                                reactivated_symbols=reactivated_symbols[:10] if len(reactivated_symbols) > 10 else reactivated_symbols
+                            )
+                            
+                            # Backfill reactivated symbols immediately (don't block)
+                            if reactivated_symbols:
+                                logger.info(
+                                    "backfilling_reactivated_symbols",
+                                    count=len(reactivated_symbols),
+                                    symbols=reactivated_symbols[:10] if len(reactivated_symbols) > 10 else reactivated_symbols
+                                )
+                                # Trigger backfill asynchronously
+                                asyncio.create_task(backfill_reactivated_symbols(reactivated_symbols))
+                            
+                            if added or removed:
+                                logger.info(
+                                    "symbol_list_changed",
+                                    message="Updating WebSocket subscriptions immediately"
+                                )
+                                
+                                # Update WebSocket service immediately if available
+                                global ws_service_instance
+                                if ws_service_instance:
+                                    try:
+                                        # Get timeframes from database
+                                        with DatabaseManager() as db:
+                                            timeframes = get_ingestion_timeframes(db)
+                                        
+                                        await ws_service_instance.update_symbols(new_symbols, timeframes)
+                                        logger.info(
+                                            "websocket_subscriptions_updated",
+                                            symbol_count=len(new_symbols),
+                                            timeframe_count=len(timeframes)
+                                        )
+                                    except Exception as e:
+                                        logger.error(
+                                            "error_updating_websocket_subscriptions",
+                                            error=str(e),
+                                            exc_info=True
+                                        )
+                                else:
+                                    logger.warning(
+                                        "websocket_service_not_available",
+                                        message="WebSocket service not yet initialized, will update on next reconnection"
+                                    )
+                                
+                except json.JSONDecodeError as e:
+                    logger.error(f"Error parsing config change message: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing config change: {e}", exc_info=True)
+                    
+        except Exception as e:
+            logger.error(f"Error in config change listener: {e}")
+            await asyncio.sleep(1)
+    
+    logger.info("config_change_listener_stopped")
+    pubsub.close()
 
 
 async def main():
@@ -187,10 +347,24 @@ async def main():
         # Get qualified symbols and timeframes from database
         with DatabaseManager() as db:
             timeframes = get_ingestion_timeframes(db)
-            symbols = get_qualified_symbols(db)
+            symbols, reactivated_symbols = get_qualified_symbols(db)
             if not symbols:
                 logger.warning("no_qualified_symbols_using_defaults")
                 symbols = DEFAULT_SYMBOLS
+            
+            # Backfill any reactivated symbols immediately
+            if reactivated_symbols:
+                logger.info(
+                    "backfilling_initial_reactivated_symbols",
+                    count=len(reactivated_symbols),
+                    symbols=reactivated_symbols[:10] if len(reactivated_symbols) > 10 else reactivated_symbols
+                )
+                # Trigger backfill asynchronously (don't block startup)
+                asyncio.create_task(backfill_reactivated_symbols(reactivated_symbols))
+        
+        # Store initial symbols globally
+        async with symbols_lock:
+            current_symbols = symbols
         
         logger.info(
             "websocket_ingestion_starting",
@@ -199,12 +373,18 @@ async def main():
             timeframes=timeframes
         )
         
-        # Start gap detection task
+        # Start gap detection task (will use current_symbols which can be updated)
         gap_task = asyncio.create_task(gap_detection_task(symbols, timeframes))
+        
+        # Start config change listener
+        config_listener_task = asyncio.create_task(listen_for_config_changes(shutdown_event))
         
         # Start WebSocket service for real-time OHLCV data
         # This replaces the REST polling loop
         async with BinanceWebSocketService() as ws_service:
+            # Store global reference for config change listener
+            global ws_service_instance
+            ws_service_instance = ws_service
             # Start periodic metrics logging task
             async def log_metrics_periodically():
                 while not shutdown_event.is_set():
@@ -254,6 +434,13 @@ async def main():
                 except asyncio.CancelledError:
                     pass
                 
+                # Cancel config listener task
+                config_listener_task.cancel()
+                try:
+                    await config_listener_task
+                except asyncio.CancelledError:
+                    pass
+                
                 # Flush any pending batches in WebSocket service
                 if ws_service.batch_buffer:
                     logger.info("flushing_pending_batches", count=len(ws_service.batch_buffer))
@@ -264,6 +451,9 @@ async def main():
                         logger.error("error_flushing_final_batch", error=str(e))
                 
                 logger.info("shutdown_completed")
+                
+                # Clear global reference
+                ws_service_instance = None
 
     finally:
         # Cancel the hourly update task
