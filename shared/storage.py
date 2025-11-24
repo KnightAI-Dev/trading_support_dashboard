@@ -407,7 +407,55 @@ class StorageService:
         except Exception as e:
             logger.error(f"Error getting symbols with prices: {e}")
             return []
-
+    
+    def get_symbol_details(self, symbol: str) -> Optional[Dict]:
+        """Get detailed symbol information including market data"""
+        try:
+            query = text("""
+                SELECT 
+                    s.symbol_name,
+                    s.base_asset,
+                    s.quote_asset,
+                    s.image_path,
+                    md.price,
+                    md.volume_24h,
+                    md.market_cap,
+                    md.circulating_supply,
+                    md.timestamp
+                FROM symbols s
+                LEFT JOIN LATERAL (
+                    SELECT price, volume_24h, market_cap, circulating_supply, timestamp
+                    FROM market_data md2
+                    WHERE md2.symbol_id = s.symbol_id
+                    ORDER BY md2.timestamp DESC
+                    LIMIT 1
+                ) md ON true
+                WHERE s.symbol_name = :symbol
+                AND s.is_active = TRUE
+                AND s.removed_at IS NULL
+            """)
+            
+            result = self.db.execute(query, {"symbol": symbol})
+            row = result.fetchone()
+            
+            if not row:
+                return None
+            
+            return {
+                "symbol_name": row[0],
+                "base_asset": row[1],
+                "quote_asset": row[2],
+                "image_path": row[3],
+                "price": float(row[4]) if row[4] is not None else None,
+                "volume_24h": float(row[5]) if row[5] is not None else None,
+                "market_cap": float(row[6]) if row[6] is not None else None,
+                "circulating_supply": float(row[7]) if row[7] is not None else None,
+                "timestamp": row[8].isoformat() if row[8] and hasattr(row[8], 'isoformat') else None,
+            }
+        except Exception as e:
+            logger.error(f"Error getting symbol details for {symbol}: {e}")
+            return None
+    
     def get_strategy_config(self, config_key: Optional[str] = None) -> Dict:
         """Get strategy configuration values from database"""
         try:

@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.circuit_breaker import AsyncCircuitBreaker
 from utils.rate_limiter import COINGECKO_RATE_LIMIT, COINGECKO_MINUTE_LIMIT
 from config.settings import COINGECKO_API_URL, COINGECKO_MIN_MARKET_CAP, COINGECKO_MIN_VOLUME_24H
-from database.repository import get_or_create_symbol_record, get_ingestion_config_value
+from database.repository import get_or_create_symbol_record, get_ingestion_config_value, split_symbol_components
 from services.binance_service import BinanceIngestionService
 
 logger = structlog.get_logger(__name__)
@@ -288,6 +288,54 @@ class CoinGeckoIngestionService:
             return await self.circuit_breaker.call(self._fetch_market_data_by_symbols_impl, symbols)
         except Exception as e:
             logger.error(f"Error fetching market data by symbols: {e}")
+            return []
+    
+    async def _fetch_market_data_by_coin_ids_impl(self, coin_ids: List[str]) -> List[Dict]:
+        """Internal implementation of fetch_market_data_by_coin_ids"""
+        if not coin_ids:
+            return []
+        
+        # CoinGecko API allows up to 250 coin IDs per request
+        all_coins = []
+        batch_size = 250
+        for i in range(0, len(coin_ids), batch_size):
+            batch = coin_ids[i:i + batch_size]
+            coin_ids_str = ",".join(batch)
+            
+            url = f"{self.base_url}/coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "ids": coin_ids_str,
+                "order": "market_cap_desc",
+                "per_page": len(batch),
+                "page": 1,
+                "sparkline": "false"
+            }
+            
+            async with COINGECKO_RATE_LIMIT:
+                async with COINGECKO_MINUTE_LIMIT:
+                    async with self.session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            all_coins.extend(data)
+                            logger.info(f"Fetched market data for {len(data)} coins by IDs")
+                        else:
+                            logger.error(f"Failed to fetch CoinGecko data: {response.status}")
+                            if response.status == 429:
+                                logger.warning("Rate limited by CoinGecko, waiting 60 seconds...")
+                                await asyncio.sleep(60)
+                                continue
+                            response.raise_for_status()
+                            break
+        
+        return all_coins
+    
+    async def fetch_market_data_by_coin_ids(self, coin_ids: List[str]) -> List[Dict]:
+        """Fetch market data from CoinGecko for specific coin IDs with circuit breaker protection"""
+        try:
+            return await self.circuit_breaker.call(self._fetch_market_data_by_coin_ids_impl, coin_ids)
+        except Exception as e:
+            logger.error(f"Error fetching market data by coin IDs: {e}")
             return []
     
     async def update_market_data_for_symbols(self, symbols: List[str], binance_service: Optional[BinanceIngestionService] = None):
@@ -609,18 +657,6 @@ class CoinGeckoIngestionService:
         min_binance_volume: Optional[float] = None,
         min_market_cap: Optional[float] = None
     ) -> List[Dict]:
-        """New ingestion flow:
-        1. Fetch Binance USDT perpetual futures (primary universe)
-        2. Fetch top 200-300 coins from CoinGecko ordered by market cap
-        3. Match CoinGecko coins to Binance symbols
-        4. Apply filters (Binance 24h volume > threshold, CoinGecko market cap > threshold)
-        5. Return final asset universe
-        
-        Args:
-            binance_service: Binance service instance
-            min_binance_volume: Minimum Binance 24h volume (USD). If None, fetched from database.
-            min_market_cap: Minimum CoinGecko market cap (USD). If None, fetched from database.
-        """
         logger.info("Starting new ingestion flow: Binance perpetuals -> CoinGecko enrichment")
         
         # Get filter thresholds and limits from database if not provided
@@ -662,79 +698,258 @@ class CoinGeckoIngestionService:
         usdt_symbols = [s for s in perpetual_symbols if s.endswith("USDT")]
         logger.info(f"Found {len(usdt_symbols)} USDT perpetual symbols on Binance")
         
+        # Save usdt_symbols to symbols table
+        if usdt_symbols:
+            with DatabaseManager() as db:
+                try:
+                    insert_sql = text("""
+                        INSERT INTO symbols (symbol_name, base_asset, quote_asset, is_active, removed_at)
+                        VALUES (:symbol_name, :base_asset, :quote_asset, FALSE, NOW())
+                        ON CONFLICT (symbol_name) 
+                        DO NOTHING
+                    """)
+                    
+                    inserted_count = 0
+                    for symbol in usdt_symbols:
+                        try:
+                            # Extract base and quote assets using repository function
+                            base_asset, quote_asset = split_symbol_components(symbol)
+                            
+                            db.execute(insert_sql, {
+                                "symbol_name": symbol,
+                                "base_asset": base_asset,
+                                "quote_asset": quote_asset
+                            })
+                            inserted_count += 1
+                        except Exception as e:
+                            logger.error(f"Error inserting symbol {symbol}: {e}")
+                            continue
+                    
+                    db.commit()
+                    logger.info(f"Saved {inserted_count} symbols to symbols table")
+                except Exception as e:
+                    logger.error(f"Error saving symbols to database: {e}")
+                    db.rollback()
+        
         # Step 2: Fetch Binance ticker data for volume filtering
         binance_tickers = await binance_service.fetch_all_tickers_24h()
         logger.info(f"Retrieved {len(binance_tickers)} tickers from Binance")
         
-        # Create a mapping of normalized base asset to Binance symbol for quick lookup
-        # This handles cases like "1000PEPE" (Binance) matching "PEPE" (CoinGecko)
-        base_asset_to_symbol = {}
+        # Step 3: Combine perpetual_symbols and binance_tickers, filter by volume
+        # Create a combined structure with symbols that exist in both perpetuals and tickers
+        combined_symbols_data = {}
+        filtered_by_volume = 0
         for symbol in usdt_symbols:
-            base_asset = self.extract_base_asset(symbol)
-            if base_asset:
-                normalized = self.normalize_base_asset(base_asset)
-                # Store normalized key (primary lookup)
-                base_asset_to_symbol[normalized] = symbol
-                # Also store original in case it's needed for exact matches
-                if normalized != base_asset.upper():
-                    base_asset_to_symbol[base_asset.upper()] = symbol
+            if symbol in binance_tickers:
+                ticker_data = binance_tickers[symbol]
+                # Filter by min_binance_volume
+                quote_volume = ticker_data.get("quoteVolume")
+                if quote_volume is not None and float(quote_volume) >= min_binance_volume:
+                    combined_symbols_data[symbol] = ticker_data
+                else:
+                    filtered_by_volume += 1
+        logger.info(f"Combined {len(combined_symbols_data)} symbols with ticker data, filtered {filtered_by_volume} by min_binance_volume ({min_binance_volume})")
         
-        logger.info(f"Created base asset mapping: {len(base_asset_to_symbol)} entries")
+        # Step 3b: Get existing CoinGecko IDs from database and identify new symbols
+        symbols_list = list(combined_symbols_data.keys())
+        symbol_to_coingecko_id = {}
+        new_symbols = set()
         
-        # Step 3: Fetch top coins from CoinGecko ordered by market cap
-        # coingecko_limit is already loaded from database above
-        logger.info(f"Fetching top {coingecko_limit} coins from CoinGecko by market cap")
-        top_coins = await self.fetch_top_market_metrics(limit=coingecko_limit)
+        if symbols_list:
+            with DatabaseManager() as db:
+                try:
+                    # Get CoinGecko IDs for all symbols in combined_symbols_data in one query
+                    query = text("""
+                        SELECT binance_symbol, coingecko_id 
+                        FROM binance_coingecko_matching 
+                        WHERE binance_symbol = ANY(:symbols)
+                    """)
+                    result = db.execute(query, {"symbols": symbols_list}).fetchall()
+                    symbol_to_coingecko_id = {row[0]: row[1] for row in result if row[1]}
+                    
+                    # Find new symbols that are not in the database
+                    existing_symbols = set(symbol_to_coingecko_id.keys())
+                    new_symbols = set(symbols_list) - existing_symbols
+                    
+                    logger.info(
+                        f"Found {len(symbol_to_coingecko_id)} existing CoinGecko IDs, "
+                        f"{len(new_symbols)} new symbols to process"
+                    )
+                except Exception as e:
+                    logger.error(f"Error querying CoinGecko IDs from database: {e}")
+                    new_symbols = set(symbols_list)
         
-        if not top_coins:
-            logger.warning("No coins fetched from CoinGecko")
+        # Step 4: Process new symbols - search CoinGecko and insert into database
+        if new_symbols:
+            logger.info(f"Processing {len(new_symbols)} new symbols, searching CoinGecko")
+            inserted_new_count = 0
+            
+            insert_sql = text("""
+                INSERT INTO binance_coingecko_matching 
+                (binance_symbol, coingecko_id, base_asset, normalized_base, 
+                 coingecko_symbol, updated_at)
+                VALUES 
+                (:binance_symbol, :coingecko_id, :base_asset, :normalized_base,
+                 :coingecko_symbol, NOW())
+                ON CONFLICT (binance_symbol) 
+                DO NOTHING
+            """)
+            
+            with DatabaseManager() as db:
+                for binance_symbol in new_symbols:
+                    try:
+                        # Extract and normalize base asset
+                        base_asset = self.extract_base_asset(binance_symbol)
+                        if not base_asset:
+                            continue
+                        
+                        normalized_base = self.normalize_base_asset(base_asset)
+                        
+                        # Search CoinGecko for this symbol
+                        coin_data = await self.enrich_asset_with_coingecko(normalized_base)
+                        if not coin_data and normalized_base != base_asset.upper():
+                            coin_data = await self.enrich_asset_with_coingecko(base_asset.upper())
+                        
+                        if coin_data:
+                            coingecko_id = coin_data.get("id", "")
+                            coingecko_symbol = coin_data.get("symbol", "").upper()
+                            
+                            # Insert into database
+                            db.execute(insert_sql, {
+                                "binance_symbol": binance_symbol,
+                                "coingecko_id": coingecko_id,
+                                "base_asset": base_asset,
+                                "normalized_base": normalized_base,
+                                "coingecko_symbol": coingecko_symbol
+                            })
+                            
+                            # Add to mapping for later use
+                            symbol_to_coingecko_id[binance_symbol] = coingecko_id
+                            inserted_new_count += 1
+                            logger.debug(f"Found and inserted CoinGecko data for {binance_symbol}")
+                    except Exception as e:
+                        logger.error(f"Error processing new symbol {binance_symbol}: {e}")
+                        continue
+                
+                db.commit()
+                logger.info(f"Inserted {inserted_new_count} new symbols into database")
+        
+        # Step 5: Fetch market data from CoinGecko and build enriched assets
+        if not symbol_to_coingecko_id:
+            logger.warning("No CoinGecko IDs found, cannot fetch market data")
             return []
         
-        logger.info(f"Fetched {len(top_coins)} coins from CoinGecko")
+        # Fetch market data for all CoinGecko IDs
+        coingecko_ids = list(symbol_to_coingecko_id.values())
+        logger.info(f"Fetching market data for {len(coingecko_ids)} CoinGecko IDs")
+        coingecko_market_data = await self.fetch_market_data_by_coin_ids(coingecko_ids)
         
-        # Step 4: Match CoinGecko coins to Binance symbols and apply filters
+        if not coingecko_market_data:
+            logger.warning("No market data fetched from CoinGecko")
+            return []
+        
+        # Create a mapping from coingecko_id to market data
+        id_to_market_data = {coin.get("id"): coin for coin in coingecko_market_data if coin.get("id")}
+        
+        # Save image_path to symbols table and market data to market_data table
+        current_timestamp = datetime.now(timezone.utc)
+        saved_market_data_count = 0
+        updated_image_path_count = 0
+        
+        with DatabaseManager() as db:
+            # Prepare SQL statements
+            update_image_sql = text("""
+                UPDATE symbols 
+                SET image_path = :image_path, updated_at = NOW()
+                WHERE symbol_name = :symbol_name
+                AND image_path IS NULL
+            """)
+            
+            insert_market_data_sql = text("""
+                INSERT INTO market_data 
+                (symbol_id, timestamp, market_cap, volume_24h, circulating_supply, price)
+                VALUES (:symbol_id, :timestamp, :market_cap, :volume_24h, :circulating_supply, :price)
+                ON CONFLICT (symbol_id, timestamp) 
+                DO UPDATE SET
+                    market_cap = EXCLUDED.market_cap,
+                    volume_24h = EXCLUDED.volume_24h,
+                    circulating_supply = EXCLUDED.circulating_supply,
+                    price = EXCLUDED.price
+            """)
+            
+            for binance_symbol in combined_symbols_data.keys():
+                try:
+                    coingecko_id = symbol_to_coingecko_id.get(binance_symbol)
+                    if not coingecko_id:
+                        continue
+                    
+                    coin_data = id_to_market_data.get(coingecko_id)
+                    if not coin_data:
+                        continue
+                    
+                    # Get symbol_id
+                    symbol_id = self.get_symbol_id(db, binance_symbol)
+                    if not symbol_id:
+                        continue
+                    
+                    # Update image_path in symbols table
+                    image_path = coin_data.get("image")
+                    if image_path:
+                        try:
+                            db.execute(update_image_sql, {
+                                "symbol_name": binance_symbol,
+                                "image_path": image_path
+                            })
+                            updated_image_path_count += 1
+                        except Exception as e:
+                            logger.debug(f"Error updating image_path for {binance_symbol}: {e}")
+                    
+                    # Extract market data
+                    market_cap = coin_data.get("market_cap")
+                    price = coin_data.get("current_price")
+                    circulating_supply = coin_data.get("circulating_supply")
+                    volume_24h = coin_data.get("total_volume")
+                    
+                    # Insert/update market_data
+                    try:
+                        db.execute(insert_market_data_sql, {
+                            "symbol_id": symbol_id,
+                            "timestamp": current_timestamp,
+                            "market_cap": float(market_cap) if market_cap else None,
+                            "volume_24h": float(volume_24h) if volume_24h else None,
+                            "circulating_supply": float(circulating_supply) if circulating_supply else None,
+                            "price": float(price) if price else None
+                        })
+                        saved_market_data_count += 1
+                    except Exception as e:
+                        logger.error(f"Error saving market data for {binance_symbol}: {e}")
+                        continue
+                        
+                except Exception as e:
+                    logger.error(f"Error processing symbol {binance_symbol} for database save: {e}")
+                    continue
+            
+            db.commit()
+            logger.info(
+                f"Saved market data for {saved_market_data_count} symbols, "
+                f"updated image_path for {updated_image_path_count} symbols"
+            )
+        
+        # Build enriched assets with filters applied
         enriched_assets = []
-        skipped_no_binance_match = 0
-        skipped_volume_filter = 0
+        skipped_no_coingecko_id = 0
         skipped_market_cap_filter = 0
         
-        for coin_data in top_coins:
+        for binance_symbol, ticker_data in combined_symbols_data.items():
             try:
-                # Check if coin is blacklisted
-                if self.is_blacklisted(coin_data=coin_data):
-                    coin_id = coin_data.get("id", "unknown")
-                    logger.debug(f"Skipping blacklisted coin: {coin_id}")
-                    skipped_no_binance_match += 1
+                coingecko_id = symbol_to_coingecko_id.get(binance_symbol)
+                if not coingecko_id:
+                    skipped_no_coingecko_id += 1
                     continue
                 
-                # Get ticker symbol from CoinGecko data
-                coin_symbol = coin_data.get("symbol", "").upper()
-                if not coin_symbol:
-                    continue
-                
-                # Normalize CoinGecko symbol for matching (handles multiplier prefix cases)
-                normalized_coin_symbol = self.normalize_base_asset(coin_symbol)
-                
-                # Find matching Binance symbol (try normalized first, then original)
-                binance_symbol = base_asset_to_symbol.get(normalized_coin_symbol)
-                if not binance_symbol:
-                    # Fallback to original symbol in case of exact match
-                    binance_symbol = base_asset_to_symbol.get(coin_symbol)
-                
-                if not binance_symbol:
-                    skipped_no_binance_match += 1
-                    continue
-                
-                # Get Binance ticker data for volume check
-                ticker_data = binance_tickers.get(binance_symbol)
-                if not ticker_data:
-                    skipped_no_binance_match += 1
-                    continue
-                
-                # Apply Binance volume filter
-                quote_volume = ticker_data.get("quoteVolume")
-                if quote_volume is None or float(quote_volume) < min_binance_volume:
-                    skipped_volume_filter += 1
+                coin_data = id_to_market_data.get(coingecko_id)
+                if not coin_data:
+                    skipped_no_coingecko_id += 1
                     continue
                 
                 # Apply CoinGecko market cap filter
@@ -743,23 +958,23 @@ class CoinGeckoIngestionService:
                     skipped_market_cap_filter += 1
                     continue
                 
-                # Add symbol to coin_data for mapping
-                coin_data["_binance_symbol"] = binance_symbol
-                coin_data["_base_asset"] = coin_symbol
-                
-                enriched_assets.append(coin_data)
+                # Build enriched asset
+                coin_data_copy = coin_data.copy()
+                coin_data_copy["_binance_symbol"] = binance_symbol
+                coin_data_copy["_base_asset"] = coin_data.get("symbol", "").upper()
+                enriched_assets.append(coin_data_copy)
                 
             except Exception as e:
-                logger.error(f"Error processing coin {coin_data.get('id', 'unknown')}: {e}")
+                logger.error(f"Error processing symbol {binance_symbol}: {e}")
                 continue
         
         logger.info(
             "ingestion_completed",
             total_binance_symbols=len(usdt_symbols),
-            coingecko_coins_fetched=len(top_coins),
+            combined_symbols=len(combined_symbols_data),
+            symbols_with_coingecko_id=len(symbol_to_coingecko_id),
             enriched_count=len(enriched_assets),
-            skipped_no_binance_match=skipped_no_binance_match,
-            skipped_volume_filter=skipped_volume_filter,
+            skipped_no_coingecko_id=skipped_no_coingecko_id,
             skipped_market_cap_filter=skipped_market_cap_filter
         )
         

@@ -553,6 +553,22 @@ async def get_symbols(db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/symbols/{symbol}/details")
+async def get_symbol_details(symbol: str, db: Session = Depends(get_db)):
+    """Get detailed symbol information including market data"""
+    try:
+        with StorageService() as storage:
+            details = storage.get_symbol_details(symbol)
+            if not details:
+                raise HTTPException(status_code=404, detail=f"Symbol {symbol} not found")
+            return details
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting symbol details for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # Strategy Configuration endpoints
 class StrategyConfigResponse(BaseModel):
     config_key: str

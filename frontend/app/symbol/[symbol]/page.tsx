@@ -3,26 +3,32 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMarketStore } from "@/stores/useMarketStore";
-import { fetchSignals, TradingSignal, fetchCandles, Candle } from "@/lib/api";
+import { fetchSignals, TradingSignal, fetchCandles, Candle, fetchSymbolDetails, SymbolDetails } from "@/lib/api";
 import { ChartContainer } from "@/components/chart/ChartContainer";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ConfluenceBadges } from "@/components/ui/ConfluenceBadge";
-import { formatPrice, formatTimestamp } from "@/lib/utils";
-import { ArrowLeft, TrendingUp, TrendingDown, Target, XCircle, CheckCircle } from "lucide-react";
+import { formatPrice, formatTimestamp, formatNumber, formatSupply, formatPercent } from "@/lib/utils";
+import { ArrowLeft, TrendingUp, TrendingDown, Target, XCircle, CheckCircle, ArrowUp, ArrowDown } from "lucide-react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { useWebSocket } from "@/hooks/useWebSocket";
+import { subscribeToSymbolUpdates } from "@/hooks/useSymbolData";
 
 export default function SymbolDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const symbol = (params.symbol as string).toUpperCase().replace("/", "") + "USDT";
+  // Get symbol from URL and ensure it ends with USDT
+  let symbolParam = (params.symbol as string).toUpperCase().replace("/", "");
+  const symbol = symbolParam.endsWith("USDT") ? symbolParam : symbolParam + "USDT";
   const { setSelectedSymbol, setLatestSignal } = useMarketStore();
 
   const [signals, setSignals] = useState<TradingSignal[]>([]);
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [symbolDetails, setSymbolDetails] = useState<SymbolDetails | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [priceChange24h, setPriceChange24h] = useState<number | null>(null);
   const [stats, setStats] = useState({
     total: 0,
     wins: 0,
@@ -33,20 +39,35 @@ export default function SymbolDetailPage() {
     short: 0,
   });
 
+  // WebSocket connection for real-time updates
+  useWebSocket(symbol, "1h");
+
   useEffect(() => {
     const loadData = async () => {
       setIsLoading(true);
       try {
         setSelectedSymbol(symbol);
-        const [fetchedSignals, fetchedCandles] = await Promise.all([
+        const [fetchedSignals, fetchedCandles, fetchedDetails] = await Promise.all([
           fetchSignals({ symbol, limit: 100 }),
           fetchCandles(symbol, "1h", 200),
+          fetchSymbolDetails(symbol).catch(() => null), // Don't fail if details not available
         ]);
 
         setSignals(fetchedSignals);
         setCandles(fetchedCandles);
+        setSymbolDetails(fetchedDetails);
         if (fetchedSignals.length > 0) {
           setLatestSignal(fetchedSignals[0]);
+        }
+
+        // Calculate 24h price change from candles
+        if (fetchedCandles.length >= 24) {
+          const currentPrice = fetchedCandles[0]?.close;
+          const price24hAgo = fetchedCandles[23]?.close;
+          if (currentPrice && price24hAgo && price24hAgo > 0) {
+            const change = ((currentPrice - price24hAgo) / price24hAgo) * 100;
+            setPriceChange24h(change);
+          }
         }
 
         // Calculate statistics
@@ -82,7 +103,28 @@ export default function SymbolDetailPage() {
     loadData();
   }, [symbol, setSelectedSymbol, setLatestSignal]);
 
+  // Subscribe to real-time symbol updates
+  useEffect(() => {
+    const unsubscribe = subscribeToSymbolUpdates((update) => {
+      if (update.symbol === symbol) {
+        setSymbolDetails((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            price: update.price ?? prev.price,
+            volume_24h: update.volume_24h ?? prev.volume_24h,
+            market_cap: update.marketcap ?? prev.market_cap,
+          };
+        });
+      }
+    });
+
+    return unsubscribe;
+  }, [symbol]);
+
   const displaySymbol = symbol.replace("USDT", "/USDT");
+  const priceChangeColor = priceChange24h !== null && priceChange24h >= 0 ? "text-green-400" : "text-red-400";
+  const priceChangeIcon = priceChange24h !== null && priceChange24h >= 0 ? ArrowUp : ArrowDown;
 
   if (isLoading) {
     return (
@@ -99,23 +141,100 @@ export default function SymbolDetailPage() {
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
       <div className="max-w-[1920px] mx-auto space-y-4">
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link href="/dashboard">
-              <Button variant="ghost" size="sm">
-                <ArrowLeft className="h-4 w-4 mr-2" />
-                Back
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-2xl font-bold text-foreground">{displaySymbol}</h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                Signal history and performance analysis
-              </p>
+        {/* Symbol Information Header */}
+        <Card className="p-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Link href="/dashboard">
+                <Button variant="ghost" size="sm">
+                  <ArrowLeft className="h-4 w-4 mr-2" />
+                  Back
+                </Button>
+              </Link>
+              
+              {/* Symbol Image */}
+              {symbolDetails?.image_path ? (
+                <img
+                  src={symbolDetails.image_path}
+                  alt={displaySymbol}
+                  className="w-16 h-16 rounded-full object-cover"
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).style.display = "none";
+                  }}
+                />
+              ) : (
+                <div className="w-16 h-16 rounded-full bg-muted flex items-center justify-center">
+                  <span className="text-lg font-medium text-muted-foreground">
+                    {symbolDetails?.base_asset?.charAt(0) || displaySymbol.charAt(0)}
+                  </span>
+                </div>
+              )}
+              
+              <div>
+                <h1 className="text-3xl font-bold text-foreground">{displaySymbol}</h1>
+                <p className="text-sm text-muted-foreground mt-1">
+                  {symbolDetails?.base_asset || ""} / {symbolDetails?.quote_asset || "USDT"}
+                </p>
+              </div>
+            </div>
+
+            {/* Price and Change */}
+            <div className="text-right">
+              <div className="text-3xl font-bold text-foreground">
+                {formatPrice(symbolDetails?.price)}
+              </div>
+              {priceChange24h !== null && (
+                <div className={`flex items-center gap-1 mt-1 ${priceChangeColor}`}>
+                  {priceChange24h >= 0 ? (
+                    <ArrowUp className="h-4 w-4" />
+                  ) : (
+                    <ArrowDown className="h-4 w-4" />
+                  )}
+                  <span className="text-lg font-semibold">
+                    {formatPercent(priceChange24h)}
+                  </span>
+                  <span className="text-sm text-muted-foreground">(24h)</span>
+                </div>
+              )}
             </div>
           </div>
-        </div>
+        </Card>
+
+        {/* Market Data Stats */}
+        {symbolDetails && (
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+            <Card className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">Market Cap</div>
+              <div className="text-xl font-bold">
+                {formatNumber(symbolDetails.market_cap)}
+              </div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">24h Volume</div>
+              <div className="text-xl font-bold">
+                {formatNumber(symbolDetails.volume_24h)}
+              </div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">Circulating Supply</div>
+              <div className="text-xl font-bold">
+                {formatSupply(symbolDetails.circulating_supply)}
+              </div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">Current Price</div>
+              <div className="text-xl font-bold">
+                {formatPrice(symbolDetails.price)}
+              </div>
+            </Card>
+            <Card className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">24h Change</div>
+              <div className={`text-xl font-bold ${priceChangeColor}`}>
+                {priceChange24h !== null ? formatPercent(priceChange24h) : "-"}
+              </div>
+            </Card>
+          </div>
+        )}
 
         {/* Stats Cards */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
