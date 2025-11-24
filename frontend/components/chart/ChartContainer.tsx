@@ -17,6 +17,7 @@ import { FibonacciOverlay } from "./FibonacciOverlay";
 import { OrderBlockOverlay } from "./OrderBlockOverlay";
 import { SupportResistanceLines } from "./SupportResistanceLines";
 import { EntrySlTpLines } from "./EntrySlTpLines";
+import { RSIIndicator } from "./RSIIndicator";
 
 interface ChartContainerProps {
   width?: number;
@@ -561,6 +562,15 @@ export function ChartContainer({
           signal={latestSignal}
         />
       )}
+
+      {/* Show RSI indicator */}
+      <RSIIndicator
+        chart={chartRef.current}
+        candles={candles}
+        selectedSymbol={selectedSymbol}
+        selectedTimeframe={selectedTimeframe}
+        period={14}
+      />
     </div>
   );
 }
