@@ -49,7 +49,8 @@ const defaultChartSettings: ChartSettings = {
   showSwings: true,  // Always show Swing High/Low
   showEntrySLTP: true,  // Always show Entry/SL/TP
   showRSI: true,  // Show RSI by default
-  rsiHeight: 20,  // RSI takes 30% of chart height by default
+  rsiHeight: 20,  // RSI takes 20% of chart height by default
+  showTooltip: true,  // Show tooltip by default
 };
 
 export const useMarketStore = create<MarketState>((set) => ({

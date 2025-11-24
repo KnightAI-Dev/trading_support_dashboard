@@ -18,6 +18,7 @@ import { OrderBlockOverlay } from "./OrderBlockOverlay";
 import { SupportResistanceLines } from "./SupportResistanceLines";
 import { EntrySlTpLines } from "./EntrySlTpLines";
 import { RSIIndicator } from "./RSIIndicator";
+import { CandleTooltip } from "./CandleTooltip";
 
 interface ChartContainerProps {
   width?: number;
@@ -572,6 +573,17 @@ export function ChartContainer({
           selectedTimeframe={selectedTimeframe}
           period={14}
           height={chartSettings.rsiHeight}
+        />
+      )}
+
+      {/* Candle Tooltip */}
+      {chartSettings.showTooltip && (
+        <CandleTooltip
+          chart={chartRef.current}
+          chartContainer={chartContainerRef.current}
+          candles={candles}
+          selectedSymbol={selectedSymbol}
+          selectedTimeframe={selectedTimeframe}
         />
       )}
     </div>

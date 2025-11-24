@@ -466,6 +466,18 @@ export default function DashboardPage() {
                   RSI
                 </Label>
               </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="show-tooltip"
+                  checked={chartSettings.showTooltip}
+                  onCheckedChange={(checked: boolean) =>
+                    updateChartSettings({ showTooltip: checked })
+                  }
+                />
+                <Label htmlFor="show-tooltip" className="text-sm cursor-pointer">
+                  Tooltip
+                </Label>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
