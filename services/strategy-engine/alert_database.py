@@ -172,7 +172,7 @@ class AlertDatabase:
                     high_price = alert.get('swing_high_price')
                     
                     # Validate required data
-                    if low_price is None and high_price is None:
+                    if low_price is None or high_price is None:
                         error_count += 1
                         logger.warning(f"Alert missing swing prices: low={low_price}, high={high_price}")
                         continue
