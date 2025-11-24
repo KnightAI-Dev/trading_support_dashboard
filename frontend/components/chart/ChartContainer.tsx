@@ -564,13 +564,16 @@ export function ChartContainer({
       )}
 
       {/* Show RSI indicator */}
-      <RSIIndicator
-        chart={chartRef.current}
-        candles={candles}
-        selectedSymbol={selectedSymbol}
-        selectedTimeframe={selectedTimeframe}
-        period={14}
-      />
+      {chartSettings.showRSI && (
+        <RSIIndicator
+          chart={chartRef.current}
+          candles={candles}
+          selectedSymbol={selectedSymbol}
+          selectedTimeframe={selectedTimeframe}
+          period={14}
+          height={chartSettings.rsiHeight}
+        />
+      )}
     </div>
   );
 }

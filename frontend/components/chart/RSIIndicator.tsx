@@ -10,6 +10,7 @@ interface RSIIndicatorProps {
   selectedSymbol: string;
   selectedTimeframe: string;
   period?: number;
+  height?: number; // Height percentage (0-100) for RSI pane
 }
 
 /**
@@ -86,6 +87,7 @@ export function RSIIndicator({
   selectedSymbol,
   selectedTimeframe,
   period = 14,
+  height = 30,
 }: RSIIndicatorProps) {
   const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
 
@@ -147,9 +149,12 @@ export function RSIIndicator({
       });
 
       // Configure RSI price scale (0-100 range) - position at bottom of chart
+      // height is percentage of chart height (10-50%), convert to scale margins
+      // If height is 30%, RSI takes bottom 30% of chart, so top margin = 70%
+      const topMargin = (100 - height) / 100;
       rsiSeries.priceScale().applyOptions({
         scaleMargins: {
-          top: 0.7, // Position RSI pane at bottom (70% top margin = RSI takes ~30% of space)
+          top: Math.max(0.05, Math.min(0.9, topMargin)), // Clamp between 5% and 90%
           bottom: 0.05,
         },
         minimum: 0,

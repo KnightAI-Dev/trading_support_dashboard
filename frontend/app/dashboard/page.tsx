@@ -454,6 +454,18 @@ export default function DashboardPage() {
                   Entry/SL/TP
                 </Label>
               </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="show-rsi"
+                  checked={chartSettings.showRSI}
+                  onCheckedChange={(checked: boolean) =>
+                    updateChartSettings({ showRSI: checked })
+                  }
+                />
+                <Label htmlFor="show-rsi" className="text-sm cursor-pointer">
+                  RSI
+                </Label>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
