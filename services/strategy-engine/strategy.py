@@ -99,7 +99,7 @@ class RunStrategy:
         
         return result
     
-    def execute_strategy(self, df_4h, df_30m, df_1h, latest_close_price, asset_symbol="OTHER"):
+    def execute_strategy(self, df_4h, df_30m, df_1h, asset_symbol="OTHER"):
         """
         Execute the complete trading strategy workflow.
         Only executes when new 4H or 30M candles are detected.
@@ -108,7 +108,6 @@ class RunStrategy:
             df_4h: DataFrame with 4H candle data
             df_30m: DataFrame with 30m candle data
             df_1h: DataFrame with 1H candle data
-            latest_close_price: Current closing price for alert logic
             asset_symbol: Asset symbol for pruning score (default: "OTHER")
             
         Returns:
@@ -121,7 +120,7 @@ class RunStrategy:
         """
         # Execute the strategy
         strategy_result = self.strategy.execute_strategy(
-            df_4h, df_30m, df_1h, latest_close_price, asset_symbol
+            df_4h, df_30m, df_1h, asset_symbol
         )
         
         # Get processed candles for timestamp extraction

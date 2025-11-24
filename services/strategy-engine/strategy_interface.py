@@ -8,6 +8,7 @@ This module implements the main trading strategy that combines:
 - Confluence scoring
 - Alert generation
 """
+from re import L
 import sys
 import os
 from dataclasses import dataclass, field
@@ -28,9 +29,9 @@ import json
 class FibResult:
     """Container for raw Fibonacci calculations derived from swing points."""
     timeframe: str
-    low_center: Tuple[int, float]
-    left_high: Optional[Tuple[int, float]] = None
-    right_high: Optional[Tuple[int, float]] = None
+    low_center: Tuple[int, float]  # (datetime, price)
+    left_high: Optional[Tuple[int, float]] = None  # (datetime, price) - earlier in time
+    right_high: Optional[Tuple[int, float]] = None  # (datetime, price) - later in time
     fib_bear_level: Optional[float] = None
     fib_bull_lower: Optional[float] = None
     fib_bull_higher: Optional[float] = None
@@ -72,7 +73,7 @@ class StrategyInterface:
                 
                 self.candle_counts_for_swing_high_low = configs.get('candle_counts_for_swing_high_low', 200)
                 self.sensible_window = configs.get('sensible_window', 2)
-                self.swing_window = configs.get('swing_window', 7)
+                self.swing_window = configs.get('swing_window', 6)
                 
                 # Load pruning scores (JSON object)
                 pruning_scores = configs.get('swing_high_low_pruning_score', {
@@ -101,7 +102,7 @@ class StrategyInterface:
             self.tp3_fib_level = 0.236
             self.candle_counts_for_swing_high_low = 200
             self.sensible_window = 2
-            self.swing_window = 7
+            self.swing_window = 6
             self.swing_high_low_pruning_score = {
                 'BTCUSDT': 0.015,
                 'ETHUSDT': 0.015,
@@ -135,10 +136,12 @@ class StrategyInterface:
         if timeframe_ticker_df is None or len(timeframe_ticker_df) == 0:
             return None
         
-        df = timeframe_ticker_df.iloc[::-1].copy()  # Reverse to get chronological order
-        if len(df) < candle_counts:
+        if len(timeframe_ticker_df) < candle_counts:
             return None
-        df = df.iloc[:candle_counts].copy()
+        df = timeframe_ticker_df.copy()  # Reverse to get chronological order
+        df = pd.concat([df, df.tail(1)], axis=0, ignore_index=True)
+        df.dropna(inplace=True)
+        df = df.iloc[:candle_counts+1]
         return df
     
     
@@ -147,12 +150,13 @@ class StrategyInterface:
         Calculate and filter swing highs and lows from candle data.
         
         Args:
-            timeframe_ticker_df: DataFrame with OHLC data
+            timeframe_ticker_df: DataFrame with OHLC data (should have 'unix' column for datetime)
             swing_high_low_candle_counts: Minimum number of candles required
             swing_pruning_rate: Rate threshold for filtering swing points
             
         Returns:
-            Tuple of (swing_highs_list, swing_lows_list) where each list contains (index, price) tuples
+            Tuple of (swing_highs_list, swing_lows_list) where each list contains (datetime, price) tuples
+            datetime is Unix timestamp from the 'unix' column
         """
         if timeframe_ticker_df is None or len(timeframe_ticker_df) < swing_high_low_candle_counts:
             return [], []
@@ -255,14 +259,14 @@ class StrategyInterface:
             if not isinstance(swing_high, (list, tuple)) or len(swing_high) < 2:
                 continue
             try:
-                h_idx, h_price = swing_high[0], swing_high[1]
-                # Validate index and price are numeric and price is positive
-                if isinstance(h_idx, (int, float)) and isinstance(h_price, (int, float)) and h_price > 0:
-                    valid_highs.append((int(h_idx), float(h_price)))
+                h_dt, h_price = swing_high[0], swing_high[1]
+                # Validate datetime and price are numeric and price is positive
+                if isinstance(h_dt, (int, float)) and isinstance(h_price, (int, float)) and h_price > 0:
+                    valid_highs.append((int(h_dt), float(h_price)))
             except (IndexError, TypeError, ValueError):
                 continue
         
-        # Sort valid highs by index for efficient searching
+        # Sort valid highs by datetime for efficient searching
         valid_highs.sort(key=lambda x: x[0])
         
         # Process each swing low
@@ -272,38 +276,41 @@ class StrategyInterface:
                 continue
             
             try:
-                low_idx, low_price = swing_low[0], swing_low[1]
+                low_dt, low_price = swing_low[0], swing_low[1]
             except (IndexError, TypeError):
                 continue
             
-            # Validate index and price
-            if not isinstance(low_idx, (int, float)) or not isinstance(low_price, (int, float)):
+            # Validate datetime and price
+            if not isinstance(low_dt, (int, float)) or not isinstance(low_price, (int, float)):
                 continue
             
-            low_idx = int(low_idx)
+            low_dt = int(low_dt)
             low_price = float(low_price)
             
             # Validate price is positive
             if low_price <= 0:
                 continue
             
-            # Find RIGHT HIGH (nearest smaller index - earlier in time)
-            # This is the highest swing high that occurs before this low
-            right_high = None
-            for h_idx, h_price in valid_highs:
-                if h_idx < low_idx:
-                    right_high = (h_idx, h_price)
-                else:
-                    # Since valid_highs is sorted, we can break once we pass the low index
-                    break
-            
-            # Find LEFT HIGH (nearest larger index - later in time)
+            # Find RIGHT HIGH (later in time - after this low)
             # This is the first swing high that occurs after this low
+            right_high = None
+            for h_dt, h_price in valid_highs:
+                if h_dt > low_dt:  # Compare datetime, not index
+                    right_high = (h_dt, h_price)
+                    # Found the first high after the low, can break
+                    break
+                # Continue searching until we find one > low_dt
+            
+            # Find LEFT HIGH (earlier in time - before this low)
+            # This is the last swing high that occurs before this low (nearest to the low)
             left_high = None
-            for h_idx, h_price in valid_highs:
-                if h_idx > low_idx:
-                    left_high = (h_idx, h_price)
-                    break  # Found the nearest one, can break
+            for h_dt, h_price in valid_highs:
+                if h_dt < low_dt:  # Compare datetime, not index
+                    left_high = (h_dt, h_price)
+                    # Keep updating until we find one >= low_dt (since list is sorted ascending)
+                else:
+                    # Since valid_highs is sorted, we can break once we pass the low datetime
+                    break
             
             # Initialize Fibonacci levels
             fib_bear_level = None
@@ -312,7 +319,7 @@ class StrategyInterface:
             
             # Calculate Bullish Fibonacci levels (extension from low to right high)
             if right_high is not None:
-                rh_idx, rh_price = right_high
+                rh_dt, rh_price = right_high
                 
                 # Validate price relationship (high should be above low)
                 if rh_price > low_price:
@@ -321,8 +328,8 @@ class StrategyInterface:
                         
                         # Calculate bullish extension levels
                         # These extend beyond the right high
-                        fib_bull_lower_level = low_price + price_diff * self.bullish_fib_level_lower
-                        fib_bull_higher_level = low_price + price_diff * self.bullish_fib_level_higher
+                        fib_bull_lower_level = rh_price - price_diff * self.bullish_fib_level_lower
+                        fib_bull_higher_level = rh_price - price_diff * self.bullish_fib_level_higher
                         
                         # Ensure fib levels are above the low (safety check)
                         fib_bull_lower_level = max(low_price, fib_bull_lower_level)
@@ -333,7 +340,7 @@ class StrategyInterface:
             
             # Calculate Bearish Fibonacci level (retracement from left high to low)
             if left_high is not None:
-                lh_idx, lh_price = left_high
+                lh_dt, lh_price = left_high
                 
                 # Validate price relationship (high should be above low)
                 if lh_price > low_price:
@@ -342,7 +349,7 @@ class StrategyInterface:
                         
                         # Calculate bearish retracement level (0.618)
                         # This is a retracement from the high back toward the low
-                        fib_bear_level = lh_price - price_diff * self.bearish_fib_level
+                        fib_bear_level = low_price + price_diff * self.bearish_fib_level
                         
                         # Ensure the fib level is between low and high (safety check)
                         fib_bear_level = max(low_price, min(lh_price, fib_bear_level))
@@ -354,9 +361,9 @@ class StrategyInterface:
             output.append(
                 FibResult(
                     timeframe=timeframe,
-                    low_center=(low_idx, low_price),
-                    left_high=left_high,
-                    right_high=right_high,
+                    low_center=(low_dt, low_price),  # (datetime, price)
+                    left_high=left_high,  # (datetime, price) or None
+                    right_high=right_high,  # (datetime, price) or None
                     fib_bear_level=float(fib_bear_level) if fib_bear_level is not None else None,
                     fib_bull_lower=float(fib_bull_lower_level) if fib_bull_lower_level is not None else None,
                     fib_bull_higher=float(fib_bull_higher_level) if fib_bull_higher_level is not None else None,
@@ -561,26 +568,20 @@ class StrategyInterface:
     def generate_alerts(
         self, 
         asset_symbol: str, 
-        latest_close_price: float, 
         confirmed_levels: List[ConfirmedFibResult], 
         df: Optional[pd.DataFrame] = None,
         bearish_alert_val: float = 0.5, 
         bullish_alert_val: float = 0.618
     ) -> List[Dict]:
         """
-        Generate alerts based on price approach to key Fibonacci levels.
-        
-        Alert Rules:
-        - If price approaches 0.618 level (bullish extension from low_center to right_high) → bullish alert
-        - If price approaches 0.5 level (bearish retracement from right_high to low_center) → bearish alert
+        Generate alerts based on key Fibonacci levels.
         
         The alert uses the highest confluence mark from the confirmed level.
         
         Args:
             asset_symbol: Asset symbol (e.g., "BTCUSDT")
-            latest_close_price: Current closing price
             confirmed_levels: List of confirmed Fibonacci levels with confluence marks
-            df: Optional DataFrame with candle data to extract swing timestamps from indices
+            df: Optional DataFrame with candle data (not currently used, kept for compatibility)
             
         Returns:
             List of alert dictionaries with highest mark, including swing timestamps
@@ -601,12 +602,13 @@ class StrategyInterface:
                 continue
             
             try:
-                # Extract prices and indices from tuples
-                low_idx = low_center[0] if isinstance(low_center, (tuple, list)) and len(low_center) >= 2 else None
+                # Extract prices and datetimes from tuples
+                # Tuples are now (datetime, price) instead of (index, price)
+                low_dt = low_center[0] if isinstance(low_center, (tuple, list)) and len(low_center) >= 2 else None
                 low_price = low_center[1] if isinstance(low_center, (tuple, list)) and len(low_center) >= 2 else None
-                right_high_idx = right_high[0] if right_high and isinstance(right_high, (tuple, list)) and len(right_high) >= 2 else None
+                right_high_dt = right_high[0] if right_high and isinstance(right_high, (tuple, list)) and len(right_high) >= 2 else None
                 right_high_price = right_high[1] if right_high and isinstance(right_high, (tuple, list)) and len(right_high) >= 2 else None
-                left_high_idx = left_high[0] if left_high and isinstance(left_high, (tuple, list)) and len(left_high) >= 2 else None
+                left_high_dt = left_high[0] if left_high and isinstance(left_high, (tuple, list)) and len(left_high) >= 2 else None
                 left_high_price = left_high[1] if left_high and isinstance(left_high, (tuple, list)) and len(left_high) >= 2 else None
                 
                 if low_price is None or low_price <= 0:
@@ -622,141 +624,84 @@ class StrategyInterface:
                 # Skip this level if we can't extract prices
                 continue
             
-            # Extract swing timestamps from DataFrame using swing indices
-            swing_low_timestamp = None
-            swing_high_timestamp = None
-            
-            if df is not None and len(df) > 0 and low_idx is not None:
-                try:
-                    # Get timestamp from DataFrame using the swing low index
-                    if isinstance(low_idx, (int, float)) and 0 <= int(low_idx) < len(df):
-                        unix_ts = int(df.iloc[int(low_idx)]['unix'])
-                        swing_low_timestamp = unix_ts
-                except (KeyError, IndexError, ValueError, TypeError) as e:
-                    pass  # If we can't get timestamp, continue without it
+            # Extract swing timestamps from tuples (datetime is now included in tuples)
+            swing_low_timestamp = low_dt if low_dt is not None and low_dt > 0 else None
             
             # Get the confluence mark (highest available)
             confluence_mark = level.confluence_mark or "none"
             
-            # Calculate fib_05_level: bearish retracement from right_high to low_center
-            # Only calculate if we have right_high
-            fib_05_level = None
-            if right_high_price is not None:
-                fib_05_level = right_high_price - (right_high_price - low_price) * self.bearish_alert_level
-            
-            # Calculate fib_level_618: bullish extension from low_center to left_high
-            # Only calculate if we have left_high
-            fib_level_618 = None
-            if left_high_price is not None:
-                fib_level_618 = low_price + (left_high_price - low_price) * self.bullish_alert_level
-            
             # Get the fib level prices
             entry_level_07 = level.fib_bull_lower or 0.0
             entry_level_618 = level.fib_bear_level or 0.0
-            
-            # Calculate percentage differences for both levels (only if levels are valid)
-            diff_pct_618 = float('inf')
-            if fib_level_618 is not None and fib_level_618 > 0:
-                diff_pct_618 = abs(latest_close_price - fib_level_618) / fib_level_618
-            
-            diff_pct_05 = float('inf')
-            if fib_05_level is not None and fib_05_level > 0:
-                diff_pct_05 = abs(latest_close_price - fib_05_level) / fib_05_level
             
             # Calculate the sl, tp1, tp2, tp3 for bearish (only if we have left_high)
             bearish_sl = None
             bearish_tp1 = None
             bearish_tp2 = None
             bearish_tp3 = None
-            bearish_approaching = float('inf')
             
             if left_high_price is not None:
-                bearish_sl = left_high_price - (left_high_price - low_price) * self.bearish_sl_fib_level
-                bearish_tp1 = left_high_price - (left_high_price - low_price) * self.tp1_fib_level
-                bearish_tp2 = left_high_price - (left_high_price - low_price) * self.tp2_fib_level
-                bearish_tp3 = left_high_price - (left_high_price - low_price) * self.tp3_fib_level
-                if entry_level_618 and entry_level_618 > 0:
-                    bearish_approaching = abs(latest_close_price - entry_level_618) / entry_level_618
+                bearish_sl = low_price + (left_high_price - low_price) * self.bearish_sl_fib_level
+                bearish_tp1 = low_price + (left_high_price - low_price) * self.tp1_fib_level
+                bearish_tp2 = low_price + (left_high_price - low_price) * self.tp2_fib_level
+                bearish_tp3 = low_price + (left_high_price - low_price) * self.tp3_fib_level
 
             # Calculate the sl, tp1, tp2, tp3 for bullish (only if we have right_high)
             bullish_sl = None
             bullish_tp1 = None
             bullish_tp2 = None
             bullish_tp3 = None
-            bullish_approaching = float('inf')
             
             if right_high_price is not None:
-                bullish_sl = low_price + (right_high_price - low_price) * self.bullish_sl_fib_level
-                bullish_tp1 = low_price + (right_high_price - low_price) * self.tp1_fib_level
-                bullish_tp2 = low_price + (right_high_price - low_price) * self.tp2_fib_level
-                bullish_tp3 = low_price + (right_high_price - low_price) * self.tp3_fib_level
-                if entry_level_07 and entry_level_07 > 0:
-                    bullish_approaching = abs(latest_close_price - entry_level_07) / entry_level_07
+                bullish_sl = right_high_price - (right_high_price - low_price) * self.bullish_sl_fib_level
+                bullish_tp1 = right_high_price - (right_high_price - low_price) * self.tp1_fib_level
+                bullish_tp2 = right_high_price - (right_high_price - low_price) * self.tp2_fib_level
+                bullish_tp3 = right_high_price - (right_high_price - low_price) * self.tp3_fib_level
             
             # Extract swing high timestamp for bullish alert (right_high)
-            bullish_swing_high_timestamp = None
-            if df is not None and len(df) > 0 and right_high_idx is not None:
-                try:
-                    if isinstance(right_high_idx, (int, float)) and 0 <= int(right_high_idx) < len(df):
-                        unix_ts = int(df.iloc[int(right_high_idx)]['unix'])
-                        bullish_swing_high_timestamp = unix_ts
-                except (KeyError, IndexError, ValueError, TypeError):
-                    pass
+            # datetime is now included in the tuple
+            bullish_swing_high_timestamp = right_high_dt if right_high_dt is not None and right_high_dt > 0 else None
             
-            # Check if price is approaching 0.618 level (bullish alert)
-            # if fib_level_618 is not None and diff_pct_618 <= self.approaching_tolerance_pct:
-                # Only trigger if closer to 0.618 than to 0.5
+            # Generate bullish alert
             alerts.append({
                     "timeframe": level.timeframe or "unknown",
                     "trend_type": "long",
                     "asset": asset_symbol,
-                    "current_price": latest_close_price,
-                    'approaching': bullish_approaching,
                     "entry_level": entry_level_07,
                     "sl": bullish_sl,
                     "tp1": bullish_tp1,
                     "tp2": bullish_tp2,
                     "tp3": bullish_tp3,
-                    "swing_low": low_center,
-                    "swing_high": right_high,
+                    "swing_low_price": low_price,
+                    "swing_high_price": right_high_price,
                     "swing_low_timestamp": swing_low_timestamp,
                     "swing_high_timestamp": bullish_swing_high_timestamp,
                     "risk_score": confluence_mark,
                 })
             
             # Extract swing high timestamp for bearish alert (left_high)
-            bearish_swing_high_timestamp = None
-            if df is not None and len(df) > 0 and left_high_idx is not None:
-                try:
-                    if isinstance(left_high_idx, (int, float)) and 0 <= int(left_high_idx) < len(df):
-                        unix_ts = int(df.iloc[int(left_high_idx)]['unix'])
-                        bearish_swing_high_timestamp = unix_ts
-                except (KeyError, IndexError, ValueError, TypeError):
-                    pass
+            # datetime is now included in the tuple
+            bearish_swing_high_timestamp = left_high_dt if left_high_dt is not None and left_high_dt > 0 else None
             
-            # Check if price is approaching 0.5 level (bearish alert)
-            # if fib_05_level is not None and diff_pct_05 <= self.approaching_tolerance_pct:
-                # Only trigger if closer to 0.5 than to 0.618
+            # Generate bearish alert
             alerts.append({
                     "timeframe": level.timeframe or "unknown",
                     "trend_type": "short",
                     "asset": asset_symbol,
-                    "current_price": latest_close_price,
-                    'approaching': bearish_approaching,
                     "entry_level": entry_level_618,
                     "sl": bearish_sl,
                     "tp1": bearish_tp1,
                     "tp2": bearish_tp2,
                     "tp3": bearish_tp3,
-                    "swing_low": low_center,
-                    "swing_high": left_high,
+                    "swing_low_price": low_price,
+                    "swing_high_price": left_high_price,
                     "swing_low_timestamp": swing_low_timestamp,
                     "swing_high_timestamp": bearish_swing_high_timestamp,
                     "risk_score": confluence_mark,
                 })
         return alerts
 
-    def execute_strategy(self, df_4h: Optional[pd.DataFrame], df_30m: Optional[pd.DataFrame], df_1h: Optional[pd.DataFrame], latest_close_price: float, asset_symbol: str = "OTHER") -> Dict:
+    def execute_strategy(self, df_4h: Optional[pd.DataFrame], df_30m: Optional[pd.DataFrame], df_1h: Optional[pd.DataFrame], asset_symbol: str = "OTHER") -> Dict:
         """
         Execute the complete trading strategy workflow.
         
@@ -764,7 +709,6 @@ class StrategyInterface:
             df_4h: DataFrame with 4H candle data
             df_30m: DataFrame with 30m candle data
             df_1h: DataFrame with 1H candle data
-            latest_close_price: Current closing price for alert logic
             asset_symbol: Asset symbol for pruning score (default: "OTHER")
             
         Returns:
@@ -773,7 +717,7 @@ class StrategyInterface:
             - support_resistance: HTF and LTF support/resistance levels
             - fib_levels: Calculated Fibonacci levels
             - confirmed_levels: Confirmed Fibonacci levels with confluence marks
-            - alerts: Trading alerts based on price approach to key levels
+            - alerts: Trading alerts based on key Fibonacci levels
         """
         # Step 1: Initialize StrategyInterface (already done in __init__)
         
@@ -900,7 +844,6 @@ class StrategyInterface:
         if has_4h:
             alerts_4h = self.generate_alerts(
                 asset_symbol,
-                latest_close_price,
                 confirmed_4h_with_marks,
                 df=candles_4h_df,
                 bearish_alert_val=self.bearish_alert_level,
@@ -911,7 +854,6 @@ class StrategyInterface:
         if has_30m:
             alerts_30m = self.generate_alerts(
                 asset_symbol,
-                latest_close_price,
                 confirmed_30m_with_marks,
                 df=candles_30m_df,
                 bearish_alert_val=self.bearish_alert_level,

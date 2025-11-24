@@ -141,19 +141,11 @@ async def process_candle_update(candle_data: dict, strategy: RunStrategy):
         df_30m = get_candles_from_db(symbol, "30m", limit=STRATEGY_CANDLE_COUNT)
         df_1h = get_candles_from_db(symbol, "1h", limit=STRATEGY_CANDLE_COUNT)  # Always fetch 1h for support/resistance
         
-        # Get latest close price
-        latest_close_price = float(candle_data.get("close", 0))
-        
-        if latest_close_price == 0:
-            logger.warning("invalid_close_price", symbol=symbol, timeframe=timeframe)
-            return
-        
         # Execute strategy
         result = strategy.execute_strategy(
             df_4h=df_4h,
             df_30m=df_30m,
             df_1h=df_1h,
-            latest_close_price=latest_close_price,
             asset_symbol=symbol
         )
         
@@ -229,26 +221,12 @@ async def initialize_strategy_alerts():
                     logger.debug("no_valid_1h_data_for_support_resistance", symbol=symbol)
                     continue
                 
-                # Get latest close price from available candles (prefer 1h, then 4h, then 30m)
-                latest_close_price = 0.0
-                if valid_1h:
-                    latest_close_price = float(df_1h.iloc[-1]['close'])
-                elif valid_4h:
-                    latest_close_price = float(df_4h.iloc[-1]['close'])
-                elif valid_30m:
-                    latest_close_price = float(df_30m.iloc[-1]['close'])
-                
-                if latest_close_price == 0:
-                    logger.debug("no_valid_price_for_symbol", symbol=symbol)
-                    continue
-                
                 # Execute strategy - pass None for missing timeframes
                 # Strategy will handle None values appropriately
                 result = strategy.execute_strategy(
                     df_4h=df_4h if valid_4h else None,
                     df_30m=df_30m if valid_30m else None,
                     df_1h=df_1h if valid_1h else None,
-                    latest_close_price=latest_close_price,
                     asset_symbol=symbol
                 )
                 
