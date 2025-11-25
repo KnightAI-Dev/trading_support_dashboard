@@ -357,11 +357,15 @@ export default function DashboardPage() {
           console.warn("Failed to parse preset signal from sessionStorage:", e);
         }
         
-        // Also check store state as fallback
-        if (!presetSignal && latestSignal && 
-            latestSignal.symbol === selectedSymbol && 
-            latestSignal.timeframe === selectedTimeframe) {
-          presetSignal = latestSignal;
+        // Only check store state for preset signal if we don't have one from sessionStorage
+        // and only on initial load (when symbol/timeframe changes)
+        if (!presetSignal) {
+          const currentLatestSignal = useMarketStore.getState().latestSignal;
+          if (currentLatestSignal && 
+              currentLatestSignal.symbol === selectedSymbol && 
+              currentLatestSignal.timeframe === selectedTimeframe) {
+            presetSignal = currentLatestSignal;
+          }
         }
         
         // Check if there's a preset signal that matches current symbol/timeframe
@@ -373,13 +377,13 @@ export default function DashboardPage() {
           const presetIndex = filteredSignals.findIndex(
             (s) => {
               // Try ID match first
-              if (s.id && presetSignal.id && s.id === presetSignal.id) return true;
+              if (s.id && presetSignal!.id && s.id === presetSignal!.id) return true;
               // Try timestamp and entry price match
-              if (s.timestamp === presetSignal.timestamp && 
-                  (s.entry1 || s.price) === (presetSignal.entry1 || presetSignal.price)) return true;
+              if (s.timestamp === presetSignal!.timestamp && 
+                  (s.entry1 || s.price) === (presetSignal!.entry1 || presetSignal!.price)) return true;
               // Try timestamp and symbol match (more lenient)
-              if (s.timestamp === presetSignal.timestamp && 
-                  s.symbol === presetSignal.symbol) return true;
+              if (s.timestamp === presetSignal!.timestamp && 
+                  s.symbol === presetSignal!.symbol) return true;
               return false;
             }
           );
@@ -416,7 +420,7 @@ export default function DashboardPage() {
     };
 
     loadSignals();
-  }, [selectedSymbol, selectedTimeframe, setLatestSignal, latestSignal]);
+  }, [selectedSymbol, selectedTimeframe, setLatestSignal]);
 
   // Update displayed signal when index changes
   useEffect(() => {
@@ -425,18 +429,27 @@ export default function DashboardPage() {
     }
   }, [currentSignalIndex, allSignals, setLatestSignal]);
 
-  // Navigation functions
-  const handlePreviousSignal = () => {
-    if (currentSignalIndex < allSignals.length - 1) {
-      setCurrentSignalIndex(currentSignalIndex + 1);
-    }
-  };
+  // Navigation functions - use functional updates to avoid stale closures
+  const handlePreviousSignal = useCallback(() => {
+    setCurrentSignalIndex((prevIndex) => {
+      // Use a ref or get the latest allSignals length
+      // Since allSignals is state, we need to access it differently
+      // For now, we'll use the current allSignals from closure
+      if (allSignals.length > 0 && prevIndex < allSignals.length - 1) {
+        return prevIndex + 1;
+      }
+      return prevIndex;
+    });
+  }, [allSignals]);
 
-  const handleNextSignal = () => {
-    if (currentSignalIndex > 0) {
-      setCurrentSignalIndex(currentSignalIndex - 1);
-    }
-  };
+  const handleNextSignal = useCallback(() => {
+    setCurrentSignalIndex((prevIndex) => {
+      if (prevIndex > 0) {
+        return prevIndex - 1;
+      }
+      return prevIndex;
+    });
+  }, []);
 
   const marketScore = latestSignal?.market_score || 0;
 

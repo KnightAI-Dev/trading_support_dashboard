@@ -115,9 +115,14 @@ export function ChartContainer({
     // Handle resize
     const handleResize = () => {
       if (chartContainerRef.current && chartRef.current) {
-        const newWidth = chartContainerRef.current.clientWidth;
-        setContainerWidth(newWidth);
-        chart.applyOptions({ width: newWidth });
+        try {
+          const newWidth = chartContainerRef.current.clientWidth;
+          setContainerWidth(newWidth);
+          chart.applyOptions({ width: newWidth });
+        } catch (error) {
+          // Chart might be disposed, ignore
+          console.warn("ChartContainer: Error resizing chart", error);
+        }
       }
     };
 
@@ -126,9 +131,19 @@ export function ChartContainer({
 
     return () => {
       window.removeEventListener("resize", handleResize);
-      chart.remove();
+      // Clear refs before disposing to prevent use after disposal
+      chartRef.current = null;
+      seriesRef.current = null;
+      volumeSeriesRef.current = null;
+      // Dispose chart
+      try {
+        chart.remove();
+      } catch (error) {
+        // Chart might already be disposed, ignore
+        console.warn("ChartContainer: Error disposing chart", error);
+      }
     };
-  }, [height]);
+  }, [height, containerWidth]);
 
   // Load more historical data when user scrolls back
   const loadMoreHistoricalData = useCallback(
@@ -211,19 +226,42 @@ export function ChartContainer({
     let isSubscribed = true;
 
     const handleVisibleTimeRangeChange = () => {
-      if (!isSubscribed || isLoadingMore) return;
+      if (!isSubscribed || isLoadingMore || !chartRef.current) return;
 
-      const visibleRange = chart.timeScale().getVisibleRange();
-      if (!visibleRange || !visibleRange.from) return;
+      // Check if chart is still valid before using it
+      let visibleRange;
+      try {
+        visibleRange = chart.timeScale().getVisibleRange();
+        if (!visibleRange || !visibleRange.from) return;
+      } catch (error) {
+        // Chart is disposed, stop processing
+        isSubscribed = false;
+        return;
+      }
 
       // Clear any pending timeout
       if (loadMoreTimeoutRef.current) {
         clearTimeout(loadMoreTimeoutRef.current);
       }
 
+      // Store visibleRange for use in setTimeout
+      const currentVisibleRange = visibleRange;
+
       // Debounce the load more request
       loadMoreTimeoutRef.current = setTimeout(() => {
-        if (!isSubscribed) return;
+        if (!isSubscribed || !chartRef.current) return;
+
+        // Check if chart is still valid before using stored range
+        try {
+          // Verify chart is still valid
+          chart.timeScale().getVisibleRange();
+        } catch (error) {
+          // Chart is disposed, stop processing
+          isSubscribed = false;
+          return;
+        }
+
+        if (!currentVisibleRange || !currentVisibleRange.from) return;
 
         // Check if user scrolled to the left (older data)
         // Load more if we're within 20% of the oldest loaded data
@@ -236,8 +274,8 @@ export function ChartContainer({
           return new Date(bd.year, bd.month - 1, bd.day).getTime() / 1000;
         };
         
-        const fromTime = convertTimeToNumber(visibleRange.from);
-        const toTime = visibleRange.to ? convertTimeToNumber(visibleRange.to) : Date.now() / 1000;
+        const fromTime = convertTimeToNumber(currentVisibleRange.from);
+        const toTime = currentVisibleRange.to ? convertTimeToNumber(currentVisibleRange.to) : Date.now() / 1000;
         
         if (oldestLoadedTime) {
           const threshold = oldestLoadedTime + (toTime - fromTime) * 0.2;
