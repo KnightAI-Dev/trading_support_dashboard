@@ -34,6 +34,7 @@ class ConfluenceAnalyzer:
         Args:
             fib_levels: List of FibResult objects to confirm
             support_resistance_dict: Dictionary with timeframe names as keys and tuples (support, resistance) as values.
+                                   Each support/resistance list contains tuples of (unix_timestamp, price).
                                    Example: {"4h": (support_list, resistance_list), "1h": (support_list, resistance_list)}
             timeframe: Timeframe string for the swing highs/lows (e.g., "4h", "1h")
             

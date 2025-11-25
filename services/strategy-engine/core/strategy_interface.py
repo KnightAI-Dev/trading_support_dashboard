@@ -107,12 +107,12 @@ class StrategyInterface:
         Calculate support and resistance levels from the DataFrame.
         
         Args:
-            timeframe_ticker_df: pandas DataFrame with OHLC data
+            timeframe_ticker_df: pandas DataFrame with OHLC data (should have 'unix' column for timestamps)
             high_timeframe_flag: If True, uses open/close for HTF analysis. If False, uses low/high for LTF analysis.
             
         Returns:
             Tuple of (support_level_list, resistance_level_list) where each list contains
-            tuples of (index, price)
+            tuples of (unix_timestamp, price)
         """
         return get_support_resistance_levels(
             timeframe_ticker_df,
