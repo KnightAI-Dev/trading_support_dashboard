@@ -2,8 +2,8 @@
 Service for symbol business logic
 """
 from typing import List, Dict, Optional
-from ..repositories.symbol_repository import SymbolRepository
-from ..exceptions import NotFoundError
+from repositories.symbol_repository import SymbolRepository
+from exceptions import NotFoundError
 from shared.redis_client import cache_get, cache_set
 import json
 

@@ -2,8 +2,8 @@
 Service for alert business logic
 """
 from typing import List, Optional, Dict
-from ..repositories.alert_repository import AlertRepository
-from ..exceptions import NotFoundError
+from repositories.alert_repository import AlertRepository
+from exceptions import NotFoundError
 from shared.redis_client import cache_get, cache_set
 import json
 

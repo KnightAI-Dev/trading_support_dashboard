@@ -2,8 +2,8 @@
 Service for candle business logic
 """
 from typing import List, Dict, Optional
-from ..repositories.candle_repository import CandleRepository
-from ..exceptions import ValidationError
+from repositories.candle_repository import CandleRepository
+from exceptions import ValidationError
 from shared.redis_client import cache_get, cache_set
 import json
 import os

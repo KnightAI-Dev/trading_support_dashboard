@@ -2,8 +2,8 @@
 Service for symbol filter business logic
 """
 from typing import List, Dict, Optional
-from ..repositories.symbol_filter_repository import SymbolFilterRepository
-from ..exceptions import NotFoundError, ValidationError
+from repositories.symbol_filter_repository import SymbolFilterRepository
+from exceptions import NotFoundError, ValidationError
 
 
 class SymbolFilterService:

@@ -11,11 +11,13 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from fastapi import FastAPI, HTTPException, Depends, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, validator
-from sqlalchemy.orm import Session
+from pydantic import BaseModel, field_validator
 
 # Add shared to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
+
+# Add api-service directory to path for local imports
+sys.path.insert(0, os.path.dirname(__file__))
 
 from shared.database import get_db, init_db
 from shared.logger import setup_logger
@@ -110,7 +112,8 @@ class SymbolFilterAdd(BaseModel):
     symbol: str
     filter_type: str  # 'whitelist' or 'blacklist'
     
-    @validator('filter_type')
+    @field_validator('filter_type')
+    @classmethod
     def validate_filter_type(cls, v):
         if v not in ('whitelist', 'blacklist'):
             raise ValueError("filter_type must be 'whitelist' or 'blacklist'")
@@ -443,7 +446,6 @@ async def get_alerts(
     timeframe: Optional[str] = Query(None),
     direction: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
-    db: Session = Depends(get_db),
     alert_service: AlertService = Depends(get_alert_service_from_db)
 ):
     """Get strategy alerts"""
@@ -460,7 +462,6 @@ async def get_alerts(
 async def get_latest_alert(
     symbol: str,
     timeframe: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
     alert_service: AlertService = Depends(get_alert_service_from_db)
 ):
     """Get latest alert for a symbol"""
@@ -471,9 +472,28 @@ async def get_latest_alert(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.get("/alerts/{symbol}/swings", response_model=List[StrategyAlertResponse])
+async def get_alerts_for_swings(
+    symbol: str,
+    timeframe: str = Query(..., description="Timeframe (required)"),
+    limit: int = Query(100, ge=1, le=1000, description="Limit results"),
+    alert_service: AlertService = Depends(get_alert_service_from_db)
+):
+    """Get strategy alerts for a specific symbol and timeframe to extract swing points from database"""
+    try:
+        alerts = alert_service.get_alerts(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit
+        )
+        return alerts
+    except Exception as e:
+        logger.error(f"Error getting alerts for swings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/alerts/summary", response_model=List[AlertSummary])
 async def get_alerts_summary(
-    db: Session = Depends(get_db),
     alert_service: AlertService = Depends(get_alert_service_from_db)
 ):
     """Get summary of latest alerts"""
@@ -502,7 +522,6 @@ async def get_candles(
     timeframe: str = Query("1h"),
     limit: int = Query(100, ge=1, le=1000),
     before: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
     candle_service: CandleService = Depends(get_candle_service_from_db)
 ):
     """Get OHLCV candles for a symbol"""
@@ -517,7 +536,6 @@ async def get_candles(
 
 @app.get("/metadata/market", response_model=MarketMetadataResponse)
 async def get_market_metadata(
-    db: Session = Depends(get_db),
     candle_service: CandleService = Depends(get_candle_service_from_db)
 ):
     """Get available symbols and timeframes"""
@@ -531,7 +549,6 @@ async def get_market_metadata(
 
 @app.get("/symbols")
 async def get_symbols(
-    db: Session = Depends(get_db),
     symbol_service: SymbolService = Depends(get_symbol_service_from_db)
 ):
     """Get all symbols with latest prices"""
@@ -542,7 +559,6 @@ async def get_symbols(
 @app.get("/symbols/{symbol}/details")
 async def get_symbol_details(
     symbol: str,
-    db: Session = Depends(get_db),
     symbol_service: SymbolService = Depends(get_symbol_service_from_db)
 ):
     """Get detailed symbol information"""
@@ -560,7 +576,6 @@ async def get_symbol_details(
 @app.get("/strategy-config", response_model=Dict[str, Any])
 async def get_strategy_config(
     config_key: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
     config_service: ConfigService = Depends(get_config_service_from_db)
 ):
     """Get strategy configuration"""
@@ -571,7 +586,6 @@ async def get_strategy_config(
 async def update_strategy_config(
     config_key: str,
     config_update: StrategyConfigUpdate,
-    db: Session = Depends(get_db),
     config_service: ConfigService = Depends(get_config_service_from_db)
 ):
     """Update strategy configuration"""
@@ -589,7 +603,6 @@ async def update_strategy_config(
 @app.put("/strategy-config")
 async def update_strategy_configs(
     bulk_update: StrategyConfigBulkUpdate,
-    db: Session = Depends(get_db),
     config_service: ConfigService = Depends(get_config_service_from_db)
 ):
     """Update multiple strategy configurations"""
@@ -606,7 +619,6 @@ async def update_strategy_configs(
 @app.get("/ingestion-config", response_model=Dict[str, Any])
 async def get_ingestion_config(
     config_key: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
     config_service: ConfigService = Depends(get_config_service_from_db)
 ):
     """Get ingestion configuration"""
@@ -617,7 +629,6 @@ async def get_ingestion_config(
 async def update_ingestion_config(
     config_key: str,
     config_update: IngestionConfigUpdate,
-    db: Session = Depends(get_db),
     config_service: ConfigService = Depends(get_config_service_from_db)
 ):
     """Update ingestion configuration"""
@@ -635,7 +646,6 @@ async def update_ingestion_config(
 @app.put("/ingestion-config")
 async def update_ingestion_configs(
     bulk_update: IngestionConfigBulkUpdate,
-    db: Session = Depends(get_db),
     config_service: ConfigService = Depends(get_config_service_from_db)
 ):
     """Update multiple ingestion configurations"""
@@ -671,7 +681,6 @@ async def reload_ingestion_config():
 @app.get("/symbol-filters", response_model=List[SymbolFilterResponse])
 async def get_symbol_filters(
     filter_type: Optional[str] = Query(None),
-    db: Session = Depends(get_db),
     filter_service: SymbolFilterService = Depends(get_symbol_filter_service_from_db)
 ):
     """Get all symbol filters"""
@@ -693,7 +702,6 @@ async def get_symbol_filters(
 @app.post("/symbol-filters", response_model=SymbolFilterResponse)
 async def add_symbol_filter(
     filter_data: SymbolFilterAdd,
-    db: Session = Depends(get_db),
     filter_service: SymbolFilterService = Depends(get_symbol_filter_service_from_db)
 ):
     """Add a symbol to whitelist or blacklist"""
@@ -725,7 +733,6 @@ async def add_symbol_filter(
 @app.delete("/symbol-filters/{symbol}")
 async def remove_symbol_filter(
     symbol: str,
-    db: Session = Depends(get_db),
     filter_service: SymbolFilterService = Depends(get_symbol_filter_service_from_db)
 ):
     """Remove a symbol from both whitelist and blacklist"""
@@ -754,7 +761,6 @@ async def remove_symbol_filter(
 @app.get("/symbol-filters/{symbol}/check")
 async def check_symbol_filter(
     symbol: str,
-    db: Session = Depends(get_db),
     filter_service: SymbolFilterService = Depends(get_symbol_filter_service_from_db)
 ):
     """Check if a symbol is whitelisted or blacklisted"""
@@ -817,7 +823,7 @@ if __name__ == "__main__":
     import uvicorn
     import os
     # Allow running on different port for testing
-    port = int(os.getenv("API_PORT", "8001"))
+    port = int(os.getenv("API_PORT", "8000"))
     print(f"Starting Refactored API Service on port {port}")
     print(f"Original API should be on port 8000 for comparison")
     uvicorn.run(app, host="0.0.0.0", port=port)

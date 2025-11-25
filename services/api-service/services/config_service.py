@@ -2,8 +2,8 @@
 Service for configuration business logic
 """
 from typing import Dict, Optional
-from ..repositories.config_repository import ConfigRepository
-from ..exceptions import ConfigurationError
+from repositories.config_repository import ConfigRepository
+from exceptions import ConfigurationError
 
 
 class ConfigService:
