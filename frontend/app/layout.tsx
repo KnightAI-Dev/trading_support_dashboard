@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { ClientLayout } from "@/components/ui/ClientLayout";
+import { Navigation } from "@/components/client/Navigation";
+import { WebSocketProvider } from "@/components/client/WebSocketProvider";
 
 const inter = Inter({ 
   subsets: ["latin"],
-  display: "swap", // Prevents render-blocking and reduces preload warnings
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -21,7 +22,10 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className={inter.className}>
-        <ClientLayout>{children}</ClientLayout>
+        <Navigation />
+        <WebSocketProvider>
+          {children}
+        </WebSocketProvider>
       </body>
     </html>
   );
