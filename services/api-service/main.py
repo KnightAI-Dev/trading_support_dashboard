@@ -15,11 +15,12 @@ from sqlalchemy.orm import Session
 # Add shared to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../'))
 
-from shared.database import get_db, init_db
+from shared.database import get_db, init_db, DatabaseManager
 from shared.models import OHLCVCandle
 from shared.logger import setup_logger
 from shared.storage import StorageService
 from shared.redis_client import get_redis
+from sqlalchemy import text
 
 logger = setup_logger(__name__)
 
@@ -753,6 +754,222 @@ async def reload_ingestion_config(db: Session = Depends(get_db)):
         return {"success": True, "message": "Ingestion service will reload symbols"}
     except Exception as e:
         logger.error(f"Error triggering ingestion reload: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# SYMBOL FILTER ENDPOINTS (Whitelist/Blacklist)
+# ============================================================================
+
+class SymbolFilterAdd(BaseModel):
+    symbol: str
+    filter_type: str  # 'whitelist' or 'blacklist'
+
+
+class SymbolFilterResponse(BaseModel):
+    symbol: str
+    filter_type: str
+    created_at: Optional[datetime]
+    updated_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+
+@app.get("/symbol-filters", response_model=List[SymbolFilterResponse])
+async def get_symbol_filters(
+    filter_type: Optional[str] = Query(None, description="Filter by type: 'whitelist' or 'blacklist'"),
+    db: Session = Depends(get_db)
+):
+    """Get all symbol filters, optionally filtered by type"""
+    try:
+        with DatabaseManager() as db_session:
+            if filter_type:
+                if filter_type not in ('whitelist', 'blacklist'):
+                    raise HTTPException(status_code=400, detail="filter_type must be 'whitelist' or 'blacklist'")
+                
+                result = db_session.execute(
+                    text("""
+                        SELECT symbol, filter_type, created_at, updated_at
+                        FROM symbol_filters
+                        WHERE filter_type = :filter_type
+                        ORDER BY symbol
+                    """),
+                    {"filter_type": filter_type}
+                ).fetchall()
+            else:
+                result = db_session.execute(
+                    text("""
+                        SELECT symbol, filter_type, created_at, updated_at
+                        FROM symbol_filters
+                        ORDER BY filter_type, symbol
+                    """)
+                ).fetchall()
+            
+            return [
+                SymbolFilterResponse(
+                    symbol=row[0],
+                    filter_type=row[1],
+                    created_at=row[2],
+                    updated_at=row[3]
+                )
+                for row in result
+            ]
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting symbol filters: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/symbol-filters", response_model=SymbolFilterResponse)
+async def add_symbol_filter(
+    filter_data: SymbolFilterAdd,
+    db: Session = Depends(get_db)
+):
+    """Add a symbol to whitelist or blacklist"""
+    try:
+        if filter_data.filter_type not in ('whitelist', 'blacklist'):
+            raise HTTPException(status_code=400, detail="filter_type must be 'whitelist' or 'blacklist'")
+        
+        # Normalize symbol
+        symbol_normalized = filter_data.symbol.lstrip("@").upper().strip()
+        
+        if not symbol_normalized:
+            raise HTTPException(status_code=400, detail="Invalid symbol")
+        
+        with DatabaseManager() as db_session:
+            # Remove from opposite filter type if exists
+            db_session.execute(
+                text("""
+                    DELETE FROM symbol_filters
+                    WHERE symbol = :symbol AND filter_type != :filter_type
+                """),
+                {
+                    "symbol": symbol_normalized,
+                    "filter_type": filter_data.filter_type
+                }
+            )
+            
+            # Insert or update
+            result = db_session.execute(
+                text("""
+                    INSERT INTO symbol_filters (symbol, filter_type, updated_at)
+                    VALUES (:symbol, :filter_type, NOW())
+                    ON CONFLICT (symbol, filter_type) 
+                    DO UPDATE SET updated_at = NOW()
+                    RETURNING symbol, filter_type, created_at, updated_at
+                """),
+                {
+                    "symbol": symbol_normalized,
+                    "filter_type": filter_data.filter_type
+                }
+            ).fetchone()
+            
+            db_session.commit()
+            
+            # Trigger ingestion reload
+            try:
+                from shared.redis_client import publish_event
+                publish_event("ingestion_config_changed", {
+                    "timestamp": datetime.now().isoformat(),
+                    "message": f"Symbol filter updated: {symbol_normalized} added to {filter_data.filter_type}"
+                })
+            except Exception as e:
+                logger.warning(f"Failed to publish filter update event: {e}")
+            
+            return SymbolFilterResponse(
+                symbol=result[0],
+                filter_type=result[1],
+                created_at=result[2],
+                updated_at=result[3]
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding symbol filter: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/symbol-filters/{symbol}")
+async def remove_symbol_filter(
+    symbol: str,
+    db: Session = Depends(get_db)
+):
+    """Remove a symbol from both whitelist and blacklist"""
+    try:
+        # Normalize symbol
+        symbol_normalized = symbol.lstrip("@").upper().strip()
+        
+        with DatabaseManager() as db_session:
+            result = db_session.execute(
+                text("""
+                    DELETE FROM symbol_filters
+                    WHERE symbol = :symbol
+                """),
+                {"symbol": symbol_normalized}
+            )
+            
+            db_session.commit()
+            deleted_count = result.rowcount
+            
+            if deleted_count == 0:
+                raise HTTPException(status_code=404, detail=f"Symbol {symbol_normalized} not found in filters")
+            
+            # Trigger ingestion reload
+            try:
+                from shared.redis_client import publish_event
+                publish_event("ingestion_config_changed", {
+                    "timestamp": datetime.now().isoformat(),
+                    "message": f"Symbol filter removed: {symbol_normalized}"
+                })
+            except Exception as e:
+                logger.warning(f"Failed to publish filter update event: {e}")
+            
+            return {"success": True, "message": f"Removed {symbol_normalized} from filters"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing symbol filter: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/symbol-filters/{symbol}/check")
+async def check_symbol_filter(
+    symbol: str,
+    db: Session = Depends(get_db)
+):
+    """Check if a symbol is whitelisted or blacklisted"""
+    try:
+        # Normalize symbol
+        symbol_normalized = symbol.lstrip("@").upper().strip()
+        
+        with DatabaseManager() as db_session:
+            result = db_session.execute(
+                text("""
+                    SELECT filter_type
+                    FROM symbol_filters
+                    WHERE symbol = :symbol
+                """),
+                {"symbol": symbol_normalized}
+            ).fetchone()
+            
+            if result:
+                return {
+                    "symbol": symbol_normalized,
+                    "is_whitelisted": result[0] == "whitelist",
+                    "is_blacklisted": result[0] == "blacklist",
+                    "filter_type": result[0]
+                }
+            else:
+                return {
+                    "symbol": symbol_normalized,
+                    "is_whitelisted": False,
+                    "is_blacklisted": False,
+                    "filter_type": None
+                }
+    except Exception as e:
+        logger.error(f"Error checking symbol filter: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

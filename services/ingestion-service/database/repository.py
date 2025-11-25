@@ -1,7 +1,7 @@
 """Database repository functions for ingestion service"""
 import sys
 import os
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import structlog
@@ -119,7 +119,13 @@ def get_timeframe_id(db: Session, timeframe: str) -> Optional[int]:
 def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
     """Get symbols from database that meet market cap and volume criteria
     Filters by ingestion config values from ingestion_config table.
+    Also applies whitelist/blacklist filters before market cap/volume filters.
     Also reactivates any inactive symbols that now meet the criteria.
+    
+    Filtering rules:
+    - If blacklisted → NEVER include
+    - If whitelisted → ALWAYS include (skip market cap/volume checks)
+    - If neither → apply market cap/volume filters
     
     Returns:
         Tuple of (qualified_symbols_list, reactivated_symbols_list)
@@ -131,6 +137,24 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
         
         min_volume = min_volume if min_volume is not None else 50000000.0
         min_market_cap = min_market_cap if min_market_cap is not None else 50000000.0
+        
+        # Get whitelisted and blacklisted symbols
+        whitelisted_symbols = set()
+        blacklisted_symbols = set()
+        filter_results = get_symbol_filters(db)
+        for filter_item in filter_results:
+            symbol = filter_item["symbol"]
+            filter_type = filter_item["filter_type"]
+            if filter_type == "whitelist":
+                whitelisted_symbols.add(symbol)
+            elif filter_type == "blacklist":
+                blacklisted_symbols.add(symbol)
+        
+        logger.info(
+            "symbol_filters_loaded",
+            whitelist_count=len(whitelisted_symbols),
+            blacklist_count=len(blacklisted_symbols)
+        )
         
         # Reactivate inactive symbols that now meet criteria (bulk update - more efficient)
         reactivated_result = db.execute(
@@ -148,14 +172,23 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
                     ORDER BY symbol_id, timestamp DESC
                 ) md
                 WHERE s.symbol_id = md.symbol_id
-                  AND md.market_cap >= :min_market_cap
-                  AND md.volume_24h >= :min_volume
                   AND s.is_active = FALSE
+                  AND (
+                      -- Whitelisted symbols: always reactivate
+                      UPPER(TRIM(BOTH '@' FROM s.symbol_name)) = ANY(:whitelisted)
+                      OR
+                      -- Non-blacklisted symbols that meet market cap/volume criteria
+                      (UPPER(TRIM(BOTH '@' FROM s.symbol_name)) != ALL(:blacklisted)
+                       AND md.market_cap >= :min_market_cap
+                       AND md.volume_24h >= :min_volume)
+                  )
                 RETURNING s.symbol_id, s.symbol_name
             """),
             {
                 "min_market_cap": min_market_cap,
-                "min_volume": min_volume
+                "min_volume": min_volume,
+                "whitelisted": list(whitelisted_symbols) if whitelisted_symbols else [],
+                "blacklisted": list(blacklisted_symbols) if blacklisted_symbols else []
             }
         ).fetchall()
         
@@ -166,13 +199,14 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
             for row in reactivated_result:
                 symbol_name = row[1]
                 if symbol_name:
-                    cleaned = symbol_name.lstrip("@").upper()
+                    cleaned = normalize_symbol(symbol_name)
                     reactivated_symbols.append(cleaned)
         
         # Now get all qualified symbols (including newly reactivated ones)
+        # Apply whitelist/blacklist filters
         result = db.execute(
             text("""
-                SELECT s.symbol_name
+                SELECT s.symbol_name, md.market_cap, md.volume_24h
                 FROM symbols s
                 INNER JOIN (
                     SELECT DISTINCT ON (symbol_id)
@@ -184,29 +218,42 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
                 ) md ON s.symbol_id = md.symbol_id
                 WHERE s.is_active = TRUE
                 AND s.removed_at IS NULL
-                AND md.market_cap >= :min_market_cap
-                AND md.volume_24h >= :min_volume
+                AND (
+                    -- Whitelisted symbols: always include (skip market cap/volume checks)
+                    UPPER(TRIM(BOTH '@' FROM s.symbol_name)) = ANY(:whitelisted)
+                    OR
+                    -- Non-blacklisted symbols that meet market cap/volume criteria
+                    (UPPER(TRIM(BOTH '@' FROM s.symbol_name)) != ALL(:blacklisted)
+                     AND md.market_cap >= :min_market_cap
+                     AND md.volume_24h >= :min_volume)
+                )
                 ORDER BY md.market_cap DESC, s.symbol_name;
             """),
             {
                 "min_market_cap": min_market_cap,
-                "min_volume": min_volume
+                "min_volume": min_volume,
+                "whitelisted": list(whitelisted_symbols) if whitelisted_symbols else [],
+                "blacklisted": list(blacklisted_symbols) if blacklisted_symbols else []
             }
         ).fetchall()
         
         # Clean symbols: remove @ prefix if present and ensure uppercase
         symbols = []
+        whitelisted_included = 0
+        blacklisted_excluded = 0
         for row in result:
             symbol = row[0]
             if symbol:
-                cleaned = symbol.lstrip("@").upper()
-                if cleaned != symbol:
-                    logger.warning(
-                        "symbol_cleaned_from_db",
-                        original=symbol,
-                        cleaned=cleaned
-                    )
+                cleaned = normalize_symbol(symbol)
+                
+                # Double-check blacklist (shouldn't happen due to SQL, but safety check)
+                if cleaned in blacklisted_symbols:
+                    blacklisted_excluded += 1
+                    continue
+                
                 symbols.append(cleaned)
+                if cleaned in whitelisted_symbols:
+                    whitelisted_included += 1
         
         # Commit only after both operations succeed
         if reactivated_count > 0:
@@ -222,6 +269,8 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
             "qualified_symbols_found",
             count=len(symbols),
             reactivated_count=reactivated_count,
+            whitelisted_included=whitelisted_included,
+            blacklisted_excluded=blacklisted_excluded,
             min_market_cap=min_market_cap,
             min_volume=min_volume
         )
@@ -409,4 +458,265 @@ def set_ingestion_config_value(
         )
         db.rollback()
         return False
+
+
+# ============================================================================
+# SYMBOL FILTER FUNCTIONS (Whitelist/Blacklist)
+# ============================================================================
+
+def normalize_symbol(symbol: str) -> str:
+    """Normalize symbol to uppercase for consistent storage and comparison"""
+    return symbol.lstrip("@").upper().strip()
+
+
+def is_whitelisted(db: Session, symbol: str) -> bool:
+    """Check if a symbol is in the whitelist
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol to check
+        
+    Returns:
+        True if symbol is whitelisted, False otherwise
+    """
+    try:
+        normalized = normalize_symbol(symbol)
+        result = db.execute(
+            text("""
+                SELECT COUNT(*) FROM symbol_filters
+                WHERE symbol = :symbol AND filter_type = 'whitelist'
+            """),
+            {"symbol": normalized}
+        ).scalar()
+        return result > 0
+    except Exception as e:
+        logger.error(
+            "whitelist_check_error",
+            symbol=symbol,
+            error=str(e),
+            exc_info=True
+        )
+        return False
+
+
+def is_blacklisted(db: Session, symbol: str) -> bool:
+    """Check if a symbol is in the blacklist
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol to check
+        
+    Returns:
+        True if symbol is blacklisted, False otherwise
+    """
+    try:
+        normalized = normalize_symbol(symbol)
+        result = db.execute(
+            text("""
+                SELECT COUNT(*) FROM symbol_filters
+                WHERE symbol = :symbol AND filter_type = 'blacklist'
+            """),
+            {"symbol": normalized}
+        ).scalar()
+        return result > 0
+    except Exception as e:
+        logger.error(
+            "blacklist_check_error",
+            symbol=symbol,
+            error=str(e),
+            exc_info=True
+        )
+        return False
+
+
+def should_ingest_symbol(db: Session, symbol: str) -> bool:
+    """Determine if a symbol should be ingested based on whitelist/blacklist rules
+    
+    Rules:
+    - If blacklisted → NEVER ingest (return False)
+    - If whitelisted → ALWAYS ingest (return True)
+    - If neither → return None (caller should apply other filters)
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol to check
+        
+    Returns:
+        True if should ingest, False if should not ingest, None if no filter applies
+    """
+    normalized = normalize_symbol(symbol)
+    
+    # Blacklist overrides everything
+    if is_blacklisted(db, normalized):
+        return False
+    
+    # Whitelist means always ingest
+    if is_whitelisted(db, normalized):
+        return True
+    
+    # Neither whitelist nor blacklist - return None to indicate no filter applies
+    return None
+
+
+def add_symbol_filter(db: Session, symbol: str, filter_type: str) -> bool:
+    """Add a symbol to whitelist or blacklist
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol to add
+        filter_type: 'whitelist' or 'blacklist'
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        normalized = normalize_symbol(symbol)
+        
+        if filter_type not in ('whitelist', 'blacklist'):
+            logger.error(
+                "invalid_filter_type",
+                filter_type=filter_type,
+                symbol=symbol
+            )
+            return False
+        
+        # Remove from opposite filter type if exists (a symbol can only be in one list)
+        db.execute(
+            text("""
+                DELETE FROM symbol_filters
+                WHERE symbol = :symbol AND filter_type != :filter_type
+            """),
+            {
+                "symbol": normalized,
+                "filter_type": filter_type
+            }
+        )
+        
+        # Insert or update
+        db.execute(
+            text("""
+                INSERT INTO symbol_filters (symbol, filter_type, updated_at)
+                VALUES (:symbol, :filter_type, NOW())
+                ON CONFLICT (symbol, filter_type) 
+                DO UPDATE SET updated_at = NOW()
+            """),
+            {
+                "symbol": normalized,
+                "filter_type": filter_type
+            }
+        )
+        
+        db.commit()
+        logger.info(
+            "symbol_filter_added",
+            symbol=normalized,
+            filter_type=filter_type
+        )
+        return True
+    except Exception as e:
+        logger.error(
+            "symbol_filter_add_error",
+            symbol=symbol,
+            filter_type=filter_type,
+            error=str(e),
+            exc_info=True
+        )
+        db.rollback()
+        return False
+
+
+def remove_symbol_filter(db: Session, symbol: str) -> bool:
+    """Remove a symbol from both whitelist and blacklist
+    
+    Args:
+        db: Database session
+        symbol: Trading symbol to remove
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        normalized = normalize_symbol(symbol)
+        
+        result = db.execute(
+            text("""
+                DELETE FROM symbol_filters
+                WHERE symbol = :symbol
+            """),
+            {"symbol": normalized}
+        )
+        
+        db.commit()
+        deleted_count = result.rowcount
+        
+        if deleted_count > 0:
+            logger.info(
+                "symbol_filter_removed",
+                symbol=normalized,
+                deleted_count=deleted_count
+            )
+        
+        return deleted_count > 0
+    except Exception as e:
+        logger.error(
+            "symbol_filter_remove_error",
+            symbol=symbol,
+            error=str(e),
+            exc_info=True
+        )
+        db.rollback()
+        return False
+
+
+def get_symbol_filters(db: Session, filter_type: Optional[str] = None) -> List[Dict]:
+    """Get all symbol filters, optionally filtered by type
+    
+    Args:
+        db: Database session
+        filter_type: Optional filter type ('whitelist' or 'blacklist')
+        
+    Returns:
+        List of dicts with symbol and filter_type
+    """
+    try:
+        if filter_type:
+            if filter_type not in ('whitelist', 'blacklist'):
+                logger.error("invalid_filter_type", filter_type=filter_type)
+                return []
+            
+            result = db.execute(
+                text("""
+                    SELECT symbol, filter_type, created_at, updated_at
+                    FROM symbol_filters
+                    WHERE filter_type = :filter_type
+                    ORDER BY symbol
+                """),
+                {"filter_type": filter_type}
+            ).fetchall()
+        else:
+            result = db.execute(
+                text("""
+                    SELECT symbol, filter_type, created_at, updated_at
+                    FROM symbol_filters
+                    ORDER BY filter_type, symbol
+                """)
+            ).fetchall()
+        
+        return [
+            {
+                "symbol": row[0],
+                "filter_type": row[1],
+                "created_at": row[2].isoformat() if row[2] else None,
+                "updated_at": row[3].isoformat() if row[3] else None
+            }
+            for row in result
+        ]
+    except Exception as e:
+        logger.error(
+            "symbol_filters_get_error",
+            filter_type=filter_type,
+            error=str(e),
+            exc_info=True
+        )
+        return []
 

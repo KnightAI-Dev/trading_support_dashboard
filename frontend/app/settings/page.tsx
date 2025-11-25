@@ -16,6 +16,10 @@ import {
   fetchIngestionConfig,
   updateIngestionConfigs,
   IngestionConfig,
+  fetchSymbolFilters,
+  addSymbolFilter,
+  removeSymbolFilter,
+  SymbolFilter,
 } from "@/lib/api";
 
 export default function SettingsPage() {
@@ -43,15 +47,19 @@ export default function SettingsPage() {
 
         {/* Configuration Tabs */}
         <Tabs defaultValue="strategy" className="w-full">
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="strategy">Strategy Config</TabsTrigger>
             <TabsTrigger value="ingestion">Ingestion Config</TabsTrigger>
+            <TabsTrigger value="filters">Symbol Filters</TabsTrigger>
           </TabsList>
           <TabsContent value="strategy">
         <StrategyConfigTab />
           </TabsContent>
           <TabsContent value="ingestion">
             <IngestionConfigTab />
+          </TabsContent>
+          <TabsContent value="filters">
+            <SymbolFiltersTab />
           </TabsContent>
         </Tabs>
       </div>
@@ -559,6 +567,220 @@ function IngestionConfigTab() {
               </div>
             </div>
           </div>
+        </div>
+      </Card>
+    </>
+  );
+}
+
+// Symbol Filters Component
+function SymbolFiltersTab() {
+  const [whitelist, setWhitelist] = useState<SymbolFilter[]>([]);
+  const [blacklist, setBlacklist] = useState<SymbolFilter[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [newSymbol, setNewSymbol] = useState("");
+  const [selectedFilterType, setSelectedFilterType] = useState<"whitelist" | "blacklist">("whitelist");
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    loadFilters();
+  }, []);
+
+  const loadFilters = async () => {
+    setIsLoading(true);
+    try {
+      const [whitelistData, blacklistData] = await Promise.all([
+        fetchSymbolFilters("whitelist"),
+        fetchSymbolFilters("blacklist"),
+      ]);
+      setWhitelist(whitelistData);
+      setBlacklist(blacklistData);
+    } catch (error) {
+      console.error("Error loading symbol filters:", error);
+      setMessage("Error loading filters");
+      setTimeout(() => setMessage(null), 3000);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleAdd = async () => {
+    if (!newSymbol.trim()) {
+      setMessage("Please enter a symbol");
+      setTimeout(() => setMessage(null), 3000);
+      return;
+    }
+
+    const symbol = newSymbol.trim().toUpperCase();
+    try {
+      await addSymbolFilter(symbol, selectedFilterType);
+      setNewSymbol("");
+      setMessage(`${symbol} added to ${selectedFilterType}`);
+      setTimeout(() => setMessage(null), 3000);
+      await loadFilters();
+      
+      // Trigger ingestion reload
+      try {
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        await fetch(`${API_URL}/ingestion-config/reload`, {
+          method: "POST",
+        });
+      } catch (reloadError) {
+        console.warn("Failed to trigger ingestion reload:", reloadError);
+      }
+    } catch (error) {
+      console.error("Error adding symbol filter:", error);
+      setMessage("Error adding symbol filter");
+      setTimeout(() => setMessage(null), 3000);
+    }
+  };
+
+  const handleRemove = async (symbol: string) => {
+    try {
+      await removeSymbolFilter(symbol);
+      setMessage(`${symbol} removed from filters`);
+      setTimeout(() => setMessage(null), 3000);
+      await loadFilters();
+      
+      // Trigger ingestion reload
+      try {
+        const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+        await fetch(`${API_URL}/ingestion-config/reload`, {
+          method: "POST",
+        });
+      } catch (reloadError) {
+        console.warn("Failed to trigger ingestion reload:", reloadError);
+      }
+    } catch (error) {
+      console.error("Error removing symbol filter:", error);
+      setMessage("Error removing symbol filter");
+      setTimeout(() => setMessage(null), 3000);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <Card className="p-6">
+        <p className="text-muted-foreground">Loading symbol filters...</p>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      {message && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="p-4 bg-primary/10 border border-primary/20 rounded-lg text-sm text-primary"
+        >
+          {message}
+        </motion.div>
+      )}
+
+      <Card className="p-6">
+        <div className="mb-6">
+          <h3 className="text-lg font-semibold mb-2">Symbol Filters</h3>
+          <p className="text-sm text-muted-foreground">
+            Manage whitelist and blacklist for symbol ingestion. Blacklist overrides whitelist.
+            Whitelisted symbols are always ingested (skip market cap/volume filters).
+            Blacklisted symbols are never ingested.
+          </p>
+        </div>
+
+        {/* Add Symbol Form */}
+        <div className="mb-6 p-4 border rounded-lg space-y-4">
+          <h4 className="text-sm font-medium">Add Symbol Filter</h4>
+          <div className="flex gap-2">
+            <Input
+              placeholder="Enter symbol (e.g., BTCUSDT)"
+              value={newSymbol}
+              onChange={(e) => setNewSymbol(e.target.value.toUpperCase())}
+              onKeyPress={(e) => {
+                if (e.key === "Enter") {
+                  handleAdd();
+                }
+              }}
+              className="flex-1"
+            />
+            <select
+              value={selectedFilterType}
+              onChange={(e) => setSelectedFilterType(e.target.value as "whitelist" | "blacklist")}
+              className="px-3 py-2 border rounded-md bg-background"
+            >
+              <option value="whitelist">Whitelist</option>
+              <option value="blacklist">Blacklist</option>
+            </select>
+            <Button onClick={handleAdd}>Add</Button>
+          </div>
+        </div>
+
+        {/* Whitelist */}
+        <div className="mb-6">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium">Whitelist ({whitelist.length})</h4>
+            <span className="text-xs text-muted-foreground">
+              Always ingested, bypasses market cap/volume filters
+            </span>
+          </div>
+          {whitelist.length === 0 ? (
+            <p className="text-sm text-muted-foreground p-4 border rounded-lg">
+              No whitelisted symbols
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {whitelist.map((filter) => (
+                <div
+                  key={filter.symbol}
+                  className="flex items-center justify-between p-2 border rounded-lg bg-green-50 dark:bg-green-950/20"
+                >
+                  <span className="text-sm font-mono">{filter.symbol}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleRemove(filter.symbol)}
+                    className="h-6 w-6 p-0"
+                  >
+                    ×
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Blacklist */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-medium">Blacklist ({blacklist.length})</h4>
+            <span className="text-xs text-muted-foreground">
+              Never ingested, overrides whitelist
+            </span>
+          </div>
+          {blacklist.length === 0 ? (
+            <p className="text-sm text-muted-foreground p-4 border rounded-lg">
+              No blacklisted symbols
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {blacklist.map((filter) => (
+                <div
+                  key={filter.symbol}
+                  className="flex items-center justify-between p-2 border rounded-lg bg-red-50 dark:bg-red-950/20"
+                >
+                  <span className="text-sm font-mono">{filter.symbol}</span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => handleRemove(filter.symbol)}
+                    className="h-6 w-6 p-0"
+                  >
+                    ×
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </Card>
     </>

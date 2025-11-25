@@ -23,7 +23,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.circuit_breaker import AsyncCircuitBreaker
 from utils.rate_limiter import COINGECKO_RATE_LIMIT, COINGECKO_MINUTE_LIMIT
 from config.settings import COINGECKO_API_URL, COINGECKO_MIN_MARKET_CAP, COINGECKO_MIN_VOLUME_24H
-from database.repository import get_or_create_symbol_record, get_ingestion_config_value, split_symbol_components
+from database.repository import (
+    get_or_create_symbol_record, 
+    get_ingestion_config_value, 
+    split_symbol_components,
+    should_ingest_symbol,
+    normalize_symbol
+)
 from services.binance_service import BinanceIngestionService
 
 logger = structlog.get_logger(__name__)
@@ -858,12 +864,46 @@ class CoinGeckoIngestionService:
         )
 
         # Build enriched assets with filters applied
+        # First, load whitelist/blacklist filters from database
+        whitelisted_symbols = set()
+        blacklisted_symbols = set()
+        
+        with DatabaseManager() as db:
+            from database.repository import get_symbol_filters
+            filter_results = get_symbol_filters(db)
+            for filter_item in filter_results:
+                symbol = filter_item["symbol"]
+                filter_type = filter_item["filter_type"]
+                if filter_type == "whitelist":
+                    whitelisted_symbols.add(symbol)
+                elif filter_type == "blacklist":
+                    blacklisted_symbols.add(symbol)
+        
+        logger.info(
+            "symbol_filters_loaded_for_ingestion",
+            whitelist_count=len(whitelisted_symbols),
+            blacklist_count=len(blacklisted_symbols)
+        )
+        
         enriched_assets = []
         skipped_no_coingecko_id = 0
         skipped_market_cap_filter = 0
+        skipped_blacklist = 0
+        included_whitelist = 0
         
         for binance_symbol, ticker_data in combined_symbols_data.items():
             try:
+                normalized_symbol = normalize_symbol(binance_symbol)
+                
+                # Apply whitelist/blacklist filters FIRST (before market cap/volume)
+                if normalized_symbol in blacklisted_symbols:
+                    skipped_blacklist += 1
+                    logger.debug(f"Symbol {binance_symbol} skipped - blacklisted")
+                    continue
+                
+                # Check if whitelisted (will skip market cap/volume checks if so)
+                is_whitelisted = normalized_symbol in whitelisted_symbols
+                
                 coingecko_id = symbol_to_coingecko_id.get(binance_symbol)
                 if not coingecko_id:
                     skipped_no_coingecko_id += 1
@@ -874,11 +914,15 @@ class CoinGeckoIngestionService:
                     skipped_no_coingecko_id += 1
                     continue
                 
-                # Apply CoinGecko market cap filter
-                market_cap = coin_data.get("market_cap")
-                if market_cap is None or float(market_cap) < min_market_cap:
-                    skipped_market_cap_filter += 1
-                    continue
+                # Apply CoinGecko market cap filter (skip if whitelisted)
+                if not is_whitelisted:
+                    market_cap = coin_data.get("market_cap")
+                    if market_cap is None or float(market_cap) < min_market_cap:
+                        skipped_market_cap_filter += 1
+                        continue
+                else:
+                    included_whitelist += 1
+                    logger.debug(f"Symbol {binance_symbol} included - whitelisted (skipping market cap check)")
                 
                 # Build enriched asset
                 coin_data_copy = coin_data.copy()
@@ -897,7 +941,9 @@ class CoinGeckoIngestionService:
             symbols_with_coingecko_id=len(symbol_to_coingecko_id),
             enriched_count=len(enriched_assets),
             skipped_no_coingecko_id=skipped_no_coingecko_id,
-            skipped_market_cap_filter=skipped_market_cap_filter
+            skipped_market_cap_filter=skipped_market_cap_filter,
+            skipped_blacklist=skipped_blacklist,
+            included_whitelist=included_whitelist
         )
         
         return enriched_assets
