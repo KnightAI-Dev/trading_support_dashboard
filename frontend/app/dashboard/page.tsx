@@ -550,10 +550,10 @@ export default function DashboardPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={handlePreviousSignal}
-                            disabled={currentSignalIndex >= allSignals.length - 1 || isLoadingSignals}
+                            onClick={handleNextSignal}
+                            disabled={currentSignalIndex <= 0 || isLoadingSignals}
                             className="h-7 w-7 p-0"
-                            title="Previous signal (older)"
+                            title="Next signal (newer)"
                           >
                             <ChevronLeft className="h-4 w-4" />
                           </Button>
@@ -565,10 +565,10 @@ export default function DashboardPage() {
                           <Button
                             variant="outline"
                             size="sm"
-                            onClick={handleNextSignal}
-                            disabled={currentSignalIndex <= 0 || isLoadingSignals}
+                            onClick={handlePreviousSignal}
+                            disabled={currentSignalIndex >= allSignals.length - 1 || isLoadingSignals}
                             className="h-7 w-7 p-0"
-                            title="Next signal (newer)"
+                            title="Previous signal (older)"
                           >
                             <ChevronRight className="h-4 w-4" />
                           </Button>
