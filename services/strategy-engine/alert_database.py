@@ -85,20 +85,20 @@ class AlertDatabase:
             logger.error(f"Error getting timeframe_id for {timeframe}: {e}")
             return None
     
-    def swing_pair_exists(self, asset: str, timeframe: str, swing_low_timestamp: datetime, swing_high_timestamp: datetime) -> bool:
+    def swing_pair_exists(self, asset: str, timeframe: str, swing_low_timestamp_unix: int, swing_high_timestamp_unix: int) -> bool:
         """
-        Check if a swing high/low pair already exists in the database using timestamps.
+        Check if a swing high/low pair already exists in the database using Unix timestamps.
         
         Args:
             asset: Asset symbol (e.g., "BTCUSDT")
             timeframe: Timeframe string (e.g., "4h", "30m")
-            swing_low_timestamp: Timestamp of swing low
-            swing_high_timestamp: Timestamp of swing high
+            swing_low_timestamp_unix: Unix timestamp of swing low
+            swing_high_timestamp_unix: Unix timestamp of swing high
             
         Returns:
             True if the pair exists, False otherwise
         """
-        if swing_low_timestamp is None or swing_high_timestamp is None:
+        if swing_low_timestamp_unix is None or swing_high_timestamp_unix is None:
             return False
         
         db = SessionLocal()
@@ -114,14 +114,14 @@ class AlertDatabase:
                     SELECT COUNT(*) FROM strategy_alerts
                     WHERE symbol_id = :symbol_id
                     AND timeframe_id = :timeframe_id
-                    AND swing_low_timestamp = :swing_low_timestamp
-                    AND swing_high_timestamp = :swing_high_timestamp
+                    AND swing_low_timestamp = TO_TIMESTAMP(:swing_low_timestamp)
+                    AND swing_high_timestamp = TO_TIMESTAMP(:swing_high_timestamp)
                 """),
                 {
                     "symbol_id": symbol_id,
                     "timeframe_id": timeframe_id,
-                    "swing_low_timestamp": swing_low_timestamp,
-                    "swing_high_timestamp": swing_high_timestamp
+                    "swing_low_timestamp": swing_low_timestamp_unix,
+                    "swing_high_timestamp": swing_high_timestamp_unix
                 }
             )
             
@@ -179,40 +179,34 @@ class AlertDatabase:
                     
                     # Extract swing timestamps from alert dictionary
                     # Timestamps are already provided as Unix timestamps in the alert
-                    swing_low_timestamp = None
-                    swing_high_timestamp = None
-                    
-                    # Get timestamps from alert (already in Unix timestamp format)
                     swing_low_timestamp_raw = alert.get('swing_low_timestamp')
                     swing_high_timestamp_raw = alert.get('swing_high_timestamp')
                     
-                    # Convert Unix timestamps to datetime objects
-                    if swing_low_timestamp_raw is not None:
-                        if isinstance(swing_low_timestamp_raw, (int, float)):
-                            swing_low_timestamp = self._unix_to_timestamp(int(swing_low_timestamp_raw))
-                        elif isinstance(swing_low_timestamp_raw, datetime):
-                            swing_low_timestamp = swing_low_timestamp_raw
-                        else:
-                            logger.warning(f"Invalid swing_low_timestamp format: {swing_low_timestamp_raw}")
-                            swing_low_timestamp = datetime.now()
-                    else:
+                    # Validate and extract Unix timestamps (keep as int/float for TO_TIMESTAMP in SQL)
+                    if swing_low_timestamp_raw is None:
                         logger.warning(f"Missing swing_low_timestamp in alert, using current time")
-                        swing_low_timestamp = datetime.now()
-                    
-                    if swing_high_timestamp_raw is not None:
-                        if isinstance(swing_high_timestamp_raw, (int, float)):
-                            swing_high_timestamp = self._unix_to_timestamp(int(swing_high_timestamp_raw))
-                        elif isinstance(swing_high_timestamp_raw, datetime):
-                            swing_high_timestamp = swing_high_timestamp_raw
-                        else:
-                            logger.warning(f"Invalid swing_high_timestamp format: {swing_high_timestamp_raw}")
-                            swing_high_timestamp = datetime.now()
+                        swing_low_timestamp_unix = int(datetime.now(timezone.utc).timestamp())
+                    elif isinstance(swing_low_timestamp_raw, (int, float)):
+                        swing_low_timestamp_unix = int(swing_low_timestamp_raw)
+                    elif isinstance(swing_low_timestamp_raw, datetime):
+                        swing_low_timestamp_unix = int(swing_low_timestamp_raw.timestamp())
                     else:
-                        logger.warning(f"Missing swing_high_timestamp in alert, using current time")
-                        swing_high_timestamp = datetime.now()
+                        logger.warning(f"Invalid swing_low_timestamp format: {swing_low_timestamp_raw}, using current time")
+                        swing_low_timestamp_unix = int(datetime.now(timezone.utc).timestamp())
                     
-                    # Check if pair already exists using timestamps
-                    if self.swing_pair_exists(asset_symbol, timeframe, swing_low_timestamp, swing_high_timestamp):
+                    if swing_high_timestamp_raw is None:
+                        logger.warning(f"Missing swing_high_timestamp in alert, using current time")
+                        swing_high_timestamp_unix = int(datetime.now(timezone.utc).timestamp())
+                    elif isinstance(swing_high_timestamp_raw, (int, float)):
+                        swing_high_timestamp_unix = int(swing_high_timestamp_raw)
+                    elif isinstance(swing_high_timestamp_raw, datetime):
+                        swing_high_timestamp_unix = int(swing_high_timestamp_raw.timestamp())
+                    else:
+                        logger.warning(f"Invalid swing_high_timestamp format: {swing_high_timestamp_raw}, using current time")
+                        swing_high_timestamp_unix = int(datetime.now(timezone.utc).timestamp())
+                    
+                    # Check if pair already exists using Unix timestamps
+                    if self.swing_pair_exists(asset_symbol, timeframe, swing_low_timestamp_unix, swing_high_timestamp_unix):
                         skipped_count += 1
                         continue
                     
@@ -222,14 +216,20 @@ class AlertDatabase:
                         error_count += 1
                         continue
                     
-                    # Get alert timestamp (when the alert was generated)
-                    alert_timestamp = alert.get('timestamp')
-                    if isinstance(alert_timestamp, (int, float)):
-                        alert_timestamp = self._unix_to_timestamp(int(alert_timestamp))
-                    elif alert_timestamp is None:
-                        alert_timestamp = datetime.now()
+                    # Get alert timestamp (when the alert was generated) as Unix timestamp
+                    alert_timestamp_raw = alert.get('timestamp')
+                    if alert_timestamp_raw is None:
+                        alert_timestamp_unix = int(datetime.now(timezone.utc).timestamp())
+                    elif isinstance(alert_timestamp_raw, (int, float)):
+                        alert_timestamp_unix = int(alert_timestamp_raw)
+                    elif isinstance(alert_timestamp_raw, datetime):
+                        alert_timestamp_unix = int(alert_timestamp_raw.timestamp())
+                    else:
+                        logger.warning(f"Invalid alert timestamp format: {alert_timestamp_raw}, using current time")
+                        alert_timestamp_unix = int(datetime.now(timezone.utc).timestamp())
                     
                     # Insert alert and get the inserted ID
+                    # Use TO_TIMESTAMP() in SQL to convert Unix timestamps
                     result = db.execute(
                         text("""
                             INSERT INTO strategy_alerts (
@@ -238,10 +238,10 @@ class AlertDatabase:
                                 risk_score, swing_low_price, swing_low_timestamp,
                                 swing_high_price, swing_high_timestamp, direction
                             ) VALUES (
-                                :symbol_id, :timeframe_id, :timestamp,
+                                :symbol_id, :timeframe_id, TO_TIMESTAMP(:timestamp),
                                 :entry_price, :stop_loss, :take_profit_1, :take_profit_2, :take_profit_3,
-                                :risk_score, :swing_low_price, :swing_low_timestamp,
-                                :swing_high_price, :swing_high_timestamp, :direction
+                                :risk_score, :swing_low_price, TO_TIMESTAMP(:swing_low_timestamp),
+                                :swing_high_price, TO_TIMESTAMP(:swing_high_timestamp), :direction
                             )
                             ON CONFLICT (symbol_id, timeframe_id, swing_low_price, swing_high_price, timestamp)
                             DO NOTHING
@@ -250,7 +250,7 @@ class AlertDatabase:
                         {
                             "symbol_id": symbol_id,
                             "timeframe_id": timeframe_id,
-                            "timestamp": alert_timestamp,
+                            "timestamp": alert_timestamp_unix,
                             "entry_price": float(alert.get('entry_level', 0)),
                             "stop_loss": float(alert.get('sl', 0)),
                             "take_profit_1": float(alert.get('tp1', 0)),
@@ -258,9 +258,9 @@ class AlertDatabase:
                             "take_profit_3": float(alert.get('tp3')) if alert.get('tp3') is not None else None,
                             "risk_score": str(alert.get('risk_score', 'none')),
                             "swing_low_price": float(low_price),
-                            "swing_low_timestamp": swing_low_timestamp,
+                            "swing_low_timestamp": swing_low_timestamp_unix,
                             "swing_high_price": float(high_price),
-                            "swing_high_timestamp": swing_high_timestamp,
+                            "swing_high_timestamp": swing_high_timestamp_unix,
                             "direction": alert.get('trend_type')  # 'long' or 'short'
                         }
                     )
@@ -270,27 +270,10 @@ class AlertDatabase:
                         alert_id = inserted_row[0]
                         # Publish event to Redis for API service to broadcast
                         try:
-                            # Ensure timestamp is in ISO format string
-                            timestamp_str = alert_timestamp.isoformat() if hasattr(alert_timestamp, 'isoformat') else str(alert_timestamp)
-                            
-                            # Convert swing timestamps to ISO format strings
-                            swing_low_ts_str = None
-                            if swing_low_timestamp:
-                                if hasattr(swing_low_timestamp, 'isoformat'):
-                                    swing_low_ts_str = swing_low_timestamp.isoformat()
-                                elif isinstance(swing_low_timestamp, (int, float)):
-                                    swing_low_ts_str = datetime.fromtimestamp(swing_low_timestamp, tz=timezone.utc).isoformat()
-                                else:
-                                    swing_low_ts_str = str(swing_low_timestamp)
-                            
-                            swing_high_ts_str = None
-                            if swing_high_timestamp:
-                                if hasattr(swing_high_timestamp, 'isoformat'):
-                                    swing_high_ts_str = swing_high_timestamp.isoformat()
-                                elif isinstance(swing_high_timestamp, (int, float)):
-                                    swing_high_ts_str = datetime.fromtimestamp(swing_high_timestamp, tz=timezone.utc).isoformat()
-                                else:
-                                    swing_high_ts_str = str(swing_high_timestamp)
+                            # Convert Unix timestamps to ISO format strings
+                            timestamp_str = datetime.fromtimestamp(alert_timestamp_unix, tz=timezone.utc).isoformat()
+                            swing_low_ts_str = datetime.fromtimestamp(swing_low_timestamp_unix, tz=timezone.utc).isoformat()
+                            swing_high_ts_str = datetime.fromtimestamp(swing_high_timestamp_unix, tz=timezone.utc).isoformat()
                             
                             alert_event = {
                                 "id": alert_id,
