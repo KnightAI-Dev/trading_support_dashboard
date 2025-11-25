@@ -1,8 +1,9 @@
 """
 SQLAlchemy models for Trading Support Architecture
 """
-from sqlalchemy import Column, Integer, String, Numeric, Boolean, DateTime, Text, CheckConstraint, Float
+from sqlalchemy import Column, Integer, String, Numeric, Boolean, DateTime, Text, CheckConstraint, Float, ForeignKey, PrimaryKeyConstraint
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from datetime import datetime
 from typing import Optional, List
@@ -26,12 +27,23 @@ class Symbol(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class Timeframe(Base):
+    """Timeframe metadata model"""
+    __tablename__ = "timeframe"
+    
+    timeframe_id = Column(Integer, primary_key=True, index=True)
+    tf_name = Column(String(10), unique=True, nullable=False, index=True)
+    seconds = Column(Integer, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
 class OHLCVCandle(Base):
+    """OHLCV Candle model matching database schema with foreign keys"""
     __tablename__ = "ohlcv_candles"
     
     id = Column(Integer, primary_key=True, index=True)
-    symbol = Column(String(20), nullable=False, index=True)
-    timeframe = Column(String(10), nullable=False, index=True)
+    symbol_id = Column(Integer, ForeignKey('symbols.symbol_id'), nullable=False, index=True)
+    timeframe_id = Column(Integer, ForeignKey('timeframe.timeframe_id'), nullable=False, index=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
     open = Column(Numeric(20, 8), nullable=False)
     high = Column(Numeric(20, 8), nullable=False)
@@ -39,6 +51,15 @@ class OHLCVCandle(Base):
     close = Column(Numeric(20, 8), nullable=False)
     volume = Column(Numeric(30, 8), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships for easier access (optional, for ORM queries)
+    symbol = relationship("Symbol", backref="candles")
+    timeframe_rel = relationship("Timeframe", backref="candles")
+    
+    __table_args__ = (
+        # Composite primary key matches database schema
+        PrimaryKeyConstraint('symbol_id', 'timeframe_id', 'timestamp'),
+    )
 
 
 class MarketData(Base):
