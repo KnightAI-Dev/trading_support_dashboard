@@ -226,6 +226,7 @@ class CoinGeckoIngestionService:
                     skipped_count += 1
                     continue
             
+            # Commit at service boundary (single commit for all symbols)
             db.commit()
             logger.info(f"Saved {saved_count} market metrics, skipped {skipped_count}")
             
@@ -1009,27 +1010,17 @@ class CoinGeckoIngestionService:
                 symbol for symbol in active_symbols_after if symbol not in enriched_symbols
             }
             
+            # Use SymbolLifecycleService for deactivation (proper service boundary)
             if symbols_to_deactivate:
-                current_timestamp = datetime.now(timezone.utc)
-                db.execute(
-                    text("""
-                        UPDATE symbols
-                        SET is_active = FALSE,
-                            removed_at = :removed_at,
-                            updated_at = :updated_at
-                        WHERE symbol_name = ANY(:symbol_names)
-                        AND is_active = TRUE
-                    """),
-                    {
-                        "removed_at": current_timestamp,
-                        "updated_at": current_timestamp,
-                        "symbol_names": list(symbols_to_deactivate),
-                    },
+                from core.symbol_lifecycle_service import SymbolLifecycleService
+                lifecycle_service = SymbolLifecycleService()
+                deactivated_count = await lifecycle_service.deactivate_symbols(
+                    db, list(symbols_to_deactivate)
                 )
                 db.commit()
                 logger.info(
                     "inactive_symbols_marked",
-                    deactivated_count=len(symbols_to_deactivate),
+                    deactivated_count=deactivated_count,
                 )
             else:
                 logger.info("All active symbols are present in enriched assets, no deactivation needed")

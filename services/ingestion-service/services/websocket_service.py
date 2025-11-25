@@ -18,8 +18,8 @@ import structlog
 # Add shared to path
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../../'))
 
-from shared.database import SessionLocal, DatabaseManager
-from shared.redis_client import publish_event
+from shared.database import DatabaseManager
+from shared.redis_client import publish_event, get_redis
 
 # Import from local modules (relative to ingestion-service root)
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -46,6 +46,7 @@ class BinanceWebSocketService:
         self.reconnect_count = 0
         self.last_message_time = None
         self.batch_buffer = []  # Buffer for batch inserts
+        self._batch_lock = asyncio.Lock()  # Lock for thread-safe batch buffer access
         self.last_batch_flush = time.time()  # Initialize to current time
         self.batch_size = WS_BATCH_SIZE
         self.batch_timeout = WS_BATCH_TIMEOUT
@@ -55,6 +56,7 @@ class BinanceWebSocketService:
         self.current_symbols = []  # Store current symbols for dynamic updates
         self.current_timeframes = []  # Store current timeframes for dynamic updates
         self._symbols_lock = asyncio.Lock()  # Lock for thread-safe symbol updates
+        self._redis_client = get_redis()  # Redis client for batch persistence
         
     async def __aenter__(self):
         return self
@@ -94,8 +96,80 @@ class BinanceWebSocketService:
                 await self.close()
                 logger.info("websocket_connections_closed_for_symbol_update")
     
+    async def _persist_batch_buffer(self):
+        """Persist batch buffer to Redis before clearing to prevent data loss"""
+        if not self.batch_buffer or not self._redis_client:
+            return
+        
+        async with self._batch_lock:
+            try:
+                key = f"websocket:batch_buffer:{id(self)}"
+                # Serialize batch buffer
+                data = json.dumps([
+                    {
+                        "symbol": c.get("symbol"),
+                        "timeframe": c.get("timeframe"),
+                        "timestamp": c.get("timestamp").isoformat() if hasattr(c.get("timestamp"), 'isoformat') else str(c.get("timestamp")),
+                        "open": float(c.get("open", 0)),
+                        "high": float(c.get("high", 0)),
+                        "low": float(c.get("low", 0)),
+                        "close": float(c.get("close", 0)),
+                        "volume": float(c.get("volume", 0)),
+                        "is_closed": c.get("is_closed", False),
+                        "open_ts": c.get("open_ts"),
+                        "close_ts": c.get("close_ts")
+                    }
+                    for c in self.batch_buffer
+                ])
+                await asyncio.to_thread(
+                    self._redis_client.setex,
+                    key,
+                    3600,  # 1 hour TTL
+                    data
+                )
+                logger.info("batch_buffer_persisted", count=len(self.batch_buffer))
+            except Exception as e:
+                logger.error("batch_persistence_error", error=str(e), exc_info=True)
+    
+    async def _restore_batch_buffer(self):
+        """Restore batch buffer from Redis after reconnection"""
+        if not self._redis_client:
+            return
+        
+        async with self._batch_lock:
+            try:
+                key = f"websocket:batch_buffer:{id(self)}"
+                data = await asyncio.to_thread(self._redis_client.get, key)
+                if data:
+                    batch_data = json.loads(data)
+                    # Convert back to candle format
+                    restored = []
+                    for c in batch_data:
+                        restored.append({
+                            "symbol": c["symbol"],
+                            "timeframe": c["timeframe"],
+                            "timestamp": datetime.fromisoformat(c["timestamp"]),
+                            "open": c["open"],
+                            "high": c["high"],
+                            "low": c["low"],
+                            "close": c["close"],
+                            "volume": c["volume"],
+                            "is_closed": c["is_closed"],
+                            "open_ts": c.get("open_ts"),
+                            "close_ts": c.get("close_ts")
+                        })
+                    self.batch_buffer.extend(restored)
+                    # Delete after restore
+                    await asyncio.to_thread(self._redis_client.delete, key)
+                    logger.info("batch_buffer_restored", count=len(restored))
+            except Exception as e:
+                logger.error("batch_restore_error", error=str(e), exc_info=True)
+    
     async def close(self):
-        """Close all WebSocket connections"""
+        """Close all WebSocket connections and persist batch buffer"""
+        # Persist batch buffer before closing to prevent data loss
+        await self._persist_batch_buffer()
+        
         # Close single connection if it exists
         if self.websocket:
             try:
@@ -370,8 +444,8 @@ class BinanceWebSocketService:
             logger.debug(f"Error parsing ticker message: {e}")
             return None
     
-    async def flush_batch(self, db: Session) -> Tuple[int, int]:
-        """Flush batched candles to database
+    async def flush_batch(self) -> Tuple[int, int]:
+        """Flush batched candles to database using DatabaseManager
         
         Only saves closed candles to database. In-progress candles are published
         via WebSocket for real-time display but not persisted.
@@ -379,24 +453,35 @@ class BinanceWebSocketService:
         Returns:
             Tuple[int, int]: (saved_count, failed_count)
         """
-        if not self.batch_buffer:
-            return 0, 0
+        async with self._batch_lock:
+            if not self.batch_buffer:
+                return 0, 0
+            
+            batch = self.batch_buffer.copy()
+            self.batch_buffer.clear()
         
         saved_count = 0
         failed_count = 0
-        batch = self.batch_buffer.copy()
-        self.batch_buffer.clear()
         
         try:
             # Separate closed and in-progress candles
             closed_candles = [c for c in batch if c.get("is_closed", False)]
             in_progress_candles = [c for c in batch if not c.get("is_closed", False)]
             
-            # Only save closed candles to database
+            # Only save closed candles to database using DatabaseManager
             if closed_candles:
-                saved, failed = await self._batch_insert_candles(db, closed_candles, is_closed=True)
-                saved_count += saved
-                failed_count += failed
+                try:
+                    with DatabaseManager() as db:
+                        saved, failed = await self._batch_insert_candles(db, closed_candles, is_closed=True)
+                        saved_count += saved
+                        failed_count += failed
+                        db.commit()
+                except Exception as e:
+                    logger.error("batch_flush_db_error", error=str(e), exc_info=True)
+                    # Restore batch on error for retry
+                    async with self._batch_lock:
+                        self.batch_buffer.extend(batch)
+                    return 0, len(batch)
             
             # Publish WebSocket events for ALL candles (closed and in-progress) for real-time display
             # Closed candles are published in _batch_insert_candles, so publish in-progress here
@@ -418,7 +503,6 @@ class BinanceWebSocketService:
                     logger.debug(f"Failed to publish in-progress candle event: {e}")
             
             if saved_count > 0:
-                db.commit()
                 self.total_batches_flushed += 1
                 self.total_candles_batched += saved_count
                 logger.debug(
@@ -430,7 +514,9 @@ class BinanceWebSocketService:
             return saved_count, failed_count
         except Exception as e:
             logger.error(f"Error flushing batch: {e}", exc_info=True)
-            db.rollback()
+            # Restore batch on error for retry
+            async with self._batch_lock:
+                self.batch_buffer.extend(batch)
             return 0, len(batch)
     
     async def _batch_insert_candles(self, db: Session, candles: List[Dict], is_closed: bool) -> Tuple[int, int]:
@@ -540,8 +626,8 @@ class BinanceWebSocketService:
         
         return saved_count, failed_count
     
-    async def save_candle_from_websocket(self, db: Session, kline_data: Dict) -> bool:
-        """Add candle to batch buffer for later batch insert
+    async def save_candle_from_websocket(self, kline_data: Dict) -> bool:
+        """Add candle to batch buffer for later batch insert (thread-safe)
         
         Returns:
             bool: True if added to batch, False if validation failed
@@ -560,12 +646,16 @@ class BinanceWebSocketService:
             logger.error(f"Timestamp is not timezone-aware for {symbol} {timeframe}")
             return False
         
-        # Add to batch buffer
-        self.batch_buffer.append(kline_data)
+        # Add to batch buffer with lock
+        async with self._batch_lock:
+            self.batch_buffer.append(kline_data)
         return True
     
     async def connect_and_subscribe(self, symbols: List[str], timeframes: List[str]):
         """Connect to WebSocket(s) and subscribe to kline streams, splitting into batches if needed"""
+        # Restore batch buffer from Redis after reconnection
+        await self._restore_batch_buffer()
+        
         if not symbols or not timeframes:
             logger.error("Cannot connect: empty symbols or timeframes list")
             return False
@@ -651,7 +741,6 @@ class BinanceWebSocketService:
     
     async def listen_and_process(self, symbols: List[str], timeframes: List[str], shutdown_event=None):
         """Listen to WebSocket messages and process kline data with improved error handling"""
-        db = None
         candles_saved = 0
         candles_failed = 0
         
@@ -678,34 +767,6 @@ class BinanceWebSocketService:
                         
                         success = await self.connect_and_subscribe(current_symbols, current_timeframes)
                         if not success:
-                            continue
-                        # Recreate database session after reconnection
-                        if db:
-                            try:
-                                db.close()
-                            except:
-                                pass
-                        # Test the new session
-                        try:
-                            with DatabaseManager() as test_db:
-                                test_db.execute(text("SELECT 1"))
-                            db = SessionLocal()
-                            logger.info("Database session recreated and tested after reconnection")
-                        except Exception as e:
-                            logger.error(f"Database session test failed after reconnection: {e}")
-                            db = None
-                    
-                    # Create database session if needed
-                    if db is None:
-                        # Test the session
-                        try:
-                            with DatabaseManager() as test_db:
-                                test_db.execute(text("SELECT 1"))
-                            db = SessionLocal()
-                        except Exception as e:
-                            logger.error(f"Database session test failed: {e}")
-                            db = None
-                            await asyncio.sleep(1)
                             continue
                     
                     # Receive message from any connected WebSocket (with shutdown check)
@@ -846,17 +907,19 @@ class BinanceWebSocketService:
                     
                     if kline_data:
                         try:
-                            # Add to batch buffer
-                            success = await self.save_candle_from_websocket(db, kline_data)
+                            # Add to batch buffer (thread-safe)
+                            success = await self.save_candle_from_websocket(kline_data)
                             
                             # Check if we should flush the batch
-                            should_flush = (
-                                len(self.batch_buffer) >= self.batch_size or
-                                (time.time() - self.last_batch_flush) >= self.batch_timeout
-                            )
+                            async with self._batch_lock:
+                                batch_size = len(self.batch_buffer)
+                                should_flush = (
+                                    batch_size >= self.batch_size or
+                                    (time.time() - self.last_batch_flush) >= self.batch_timeout
+                                )
                             
-                            if should_flush and self.batch_buffer:
-                                batch_saved, batch_failed = await self.flush_batch(db)
+                            if should_flush:
+                                batch_saved, batch_failed = await self.flush_batch()
                                 candles_saved += batch_saved
                                 candles_failed += batch_failed
                                 self.last_batch_flush = time.time()
@@ -870,26 +933,6 @@ class BinanceWebSocketService:
                         except Exception as save_error:
                             candles_failed += 1
                             logger.error(f"Failed to process candle (exception): {save_error}", exc_info=True)
-                            # Recreate database session on error
-                            if db:
-                                try:
-                                    db.rollback()
-                                except:
-                                    pass
-                                try:
-                                    db.close()
-                                except:
-                                    pass
-                            # Test new session before using
-                            try:
-                                with DatabaseManager() as test_db:
-                                    test_db.execute(text("SELECT 1"))
-                                db = SessionLocal()
-                            except Exception as e:
-                                logger.error(f"Database session recreation failed: {e}")
-                                db = None
-                            # Clear batch buffer on error
-                            self.batch_buffer.clear()
                     
                 except (ConnectionClosed, WebSocketException) as e:
                     logger.warning(
@@ -899,42 +942,33 @@ class BinanceWebSocketService:
                     )
                     self.is_connected = False
                     self.reconnect_count += 1
-                    # Close all connections
+                    
+                    # Try to flush any pending batch before closing (batch will be persisted in close())
+                    async with self._batch_lock:
+                        if self.batch_buffer:
+                            try:
+                                await self.flush_batch()
+                            except Exception as flush_error:
+                                logger.error("error_flushing_before_close", error=str(flush_error))
+                    
+                    # Close all connections (this will persist batch buffer)
                     await self.close()
-                    # Close database session on connection loss
-                    if db:
-                        try:
-                            # Try to flush any pending batch before closing
-                            if self.batch_buffer:
-                                try:
-                                    await self.flush_batch(db)
-                                except:
-                                    pass
-                            db.close()
-                        except:
-                            pass
-                    db = None
-                    # Clear batch buffer on connection loss
-                    self.batch_buffer.clear()
                 except Exception as e:
                     logger.error(f"Error processing WebSocket message: {e}", exc_info=True)
                     await asyncio.sleep(1)
         finally:
-            # Flush any remaining batch items
-            if db and self.batch_buffer:
-                try:
-                    batch_saved, batch_failed = await self.flush_batch(db)
-                    candles_saved += batch_saved
-                    candles_failed += batch_failed
-                    logger.info(f"Flushed final batch: {batch_saved} saved, {batch_failed} failed")
-                except Exception as e:
-                    logger.error(f"Error flushing final batch: {e}")
+            # Flush any remaining batch items (batch will be persisted in close() if flush fails)
+            async with self._batch_lock:
+                if self.batch_buffer:
+                    try:
+                        batch_saved, batch_failed = await self.flush_batch()
+                        candles_saved += batch_saved
+                        candles_failed += batch_failed
+                        logger.info(f"Flushed final batch: {batch_saved} saved, {batch_failed} failed")
+                    except Exception as e:
+                        logger.error(f"Error flushing final batch: {e}")
+                        # Batch will be persisted by close() if available
             
-            if db:
-                try:
-                    db.close()
-                except:
-                    pass
             logger.info(f"WebSocket listener stopped. Total: {candles_saved} saved, {candles_failed} failed")
     
     async def start(self, symbols: List[str], timeframes: List[str], shutdown_event=None):

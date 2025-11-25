@@ -288,7 +288,10 @@ class BinanceIngestionService:
         return candles
     
     def save_candles(self, db: Session, candles: List[OHLCVCandle]):
-        """Save candles to database with symbol/timeframe foreign keys"""
+        """Save candles to database with symbol/timeframe foreign keys (BATCH INSERT)
+        
+        Note: Does not commit - caller should commit at service boundary
+        """
         if not candles:
             return
         
@@ -307,15 +310,10 @@ class BinanceIngestionService:
                 )
                 return
             
-            stmt = text("""
-                INSERT INTO ohlcv_candles 
-                (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
-                VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
-                ON CONFLICT (symbol_id, timeframe_id, timestamp) DO NOTHING
-            """)
-            
+            # Batch insert all candles in single execute
+            params_list = []
             for candle in candles:
-                db.execute(stmt, {
+                params_list.append({
                     "symbol_id": symbol_id,
                     "timeframe_id": timeframe_id,
                     "timestamp": candle.timestamp,
@@ -326,7 +324,17 @@ class BinanceIngestionService:
                     "volume": float(candle.volume)
                 })
             
-            db.commit()
+            stmt = text("""
+                INSERT INTO ohlcv_candles 
+                (symbol_id, timeframe_id, timestamp, open, high, low, close, volume)
+                VALUES (:symbol_id, :timeframe_id, :timestamp, :open, :high, :low, :close, :volume)
+                ON CONFLICT (symbol_id, timeframe_id, timestamp) DO NOTHING
+            """)
+            
+            # Single execute for all candles (more efficient)
+            db.execute(stmt, params_list)
+            
+            # Note: No commit here - caller commits at service boundary
             logger.info(
                 "candles_saved",
                 symbol=first_candle.symbol,
@@ -342,7 +350,6 @@ class BinanceIngestionService:
                 error=str(e),
                 exc_info=True
             )
-            db.rollback()
             raise
     
     async def ingest_symbol(self, symbol: str, timeframe: str = DEFAULT_TIMEFRAME):
@@ -361,6 +368,7 @@ class BinanceIngestionService:
             if candles:
                 with DatabaseManager() as db:
                     self.save_candles(db, candles)
+                    db.commit()  # Commit at service boundary
                     # Publish event with full OHLCV data
                     latest_candle = candles[-1]
                     publish_event("candle_update", {

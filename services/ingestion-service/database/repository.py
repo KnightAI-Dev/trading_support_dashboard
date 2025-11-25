@@ -116,11 +116,11 @@ def get_timeframe_id(db: Session, timeframe: str) -> Optional[int]:
         return None
 
 
-def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
-    """Get symbols from database that meet market cap and volume criteria
+def get_qualified_symbols(db: Session) -> List[str]:
+    """Get symbols from database that meet market cap and volume criteria (PURE QUERY - NO SIDE EFFECTS)
+    
     Filters by ingestion config values from ingestion_config table.
     Also applies whitelist/blacklist filters before market cap/volume filters.
-    Also reactivates any inactive symbols that now meet the criteria.
     
     Filtering rules:
     - If blacklisted → NEVER include
@@ -128,7 +128,7 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
     - If neither → apply market cap/volume filters
     
     Returns:
-        Tuple of (qualified_symbols_list, reactivated_symbols_list)
+        List of qualified symbol names
     """
     try:
         # Get ingestion config thresholds
@@ -156,54 +156,7 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
             blacklist_count=len(blacklisted_symbols)
         )
         
-        # Reactivate inactive symbols that now meet criteria (bulk update - more efficient)
-        reactivated_result = db.execute(
-            text("""
-                UPDATE symbols AS s
-                SET is_active = TRUE,
-                    removed_at = NULL,
-                    updated_at = NOW()
-                FROM (
-                    SELECT DISTINCT ON (symbol_id)
-                        symbol_id, market_cap, volume_24h
-                    FROM market_data
-                    WHERE market_cap IS NOT NULL
-                      AND volume_24h IS NOT NULL
-                    ORDER BY symbol_id, timestamp DESC
-                ) md
-                WHERE s.symbol_id = md.symbol_id
-                  AND s.is_active = FALSE
-                  AND (
-                      -- Whitelisted symbols: always reactivate
-                      UPPER(TRIM(BOTH '@' FROM s.symbol_name)) = ANY(:whitelisted)
-                      OR
-                      -- Non-blacklisted symbols that meet market cap/volume criteria
-                      (UPPER(TRIM(BOTH '@' FROM s.symbol_name)) != ALL(:blacklisted)
-                       AND md.market_cap >= :min_market_cap
-                       AND md.volume_24h >= :min_volume)
-                  )
-                RETURNING s.symbol_id, s.symbol_name
-            """),
-            {
-                "min_market_cap": min_market_cap,
-                "min_volume": min_volume,
-                "whitelisted": list(whitelisted_symbols) if whitelisted_symbols else [],
-                "blacklisted": list(blacklisted_symbols) if blacklisted_symbols else []
-            }
-        ).fetchall()
-        
-        reactivated_count = len(reactivated_result)
-        reactivated_symbols = []
-        if reactivated_count > 0:
-            # Clean reactivated symbol names
-            for row in reactivated_result:
-                symbol_name = row[1]
-                if symbol_name:
-                    cleaned = normalize_symbol(symbol_name)
-                    reactivated_symbols.append(cleaned)
-        
-        # Now get all qualified symbols (including newly reactivated ones)
-        # Apply whitelist/blacklist filters
+        # Get all qualified symbols (PURE QUERY - NO UPDATES)
         result = db.execute(
             text("""
                 SELECT s.symbol_name, md.market_cap, md.volume_24h
@@ -255,30 +208,76 @@ def get_qualified_symbols(db: Session) -> Tuple[List[str], List[str]]:
                 if cleaned in whitelisted_symbols:
                     whitelisted_included += 1
         
-        # Commit only after both operations succeed
-        if reactivated_count > 0:
-            db.commit()
-            logger.info(
-                "symbols_reactivated",
-                count=reactivated_count,
-                symbols=reactivated_symbols[:10] if len(reactivated_symbols) > 10 else reactivated_symbols,
-                message=f"Reactivated {reactivated_count} previously inactive symbols that now meet criteria"
-            )
-        
         logger.info(
             "qualified_symbols_found",
             count=len(symbols),
-            reactivated_count=reactivated_count,
             whitelisted_included=whitelisted_included,
             blacklisted_excluded=blacklisted_excluded,
             min_market_cap=min_market_cap,
             min_volume=min_volume
         )
-        return symbols, reactivated_symbols
+        return symbols
     except Exception as e:
         logger.error("qualified_symbols_error", error=str(e), exc_info=True)
-        db.rollback()
-        return DEFAULT_SYMBOLS, []
+        return DEFAULT_SYMBOLS
+
+
+def find_symbols_to_reactivate(
+    db: Session,
+    min_market_cap: float,
+    min_volume: float,
+    whitelisted_symbols: set,
+    blacklisted_symbols: set
+) -> List[str]:
+    """Find symbols that should be reactivated (PURE QUERY - NO SIDE EFFECTS)
+    
+    Args:
+        db: Database session
+        min_market_cap: Minimum market cap threshold
+        min_volume: Minimum volume threshold
+        whitelisted_symbols: Set of whitelisted symbols
+        blacklisted_symbols: Set of blacklisted symbols
+        
+    Returns:
+        List of symbol names that should be reactivated
+    """
+    try:
+        result = db.execute(
+            text("""
+                SELECT s.symbol_name
+                FROM symbols s
+                INNER JOIN (
+                    SELECT DISTINCT ON (symbol_id)
+                        symbol_id, market_cap, volume_24h
+                    FROM market_data
+                    WHERE market_cap IS NOT NULL
+                      AND volume_24h IS NOT NULL
+                    ORDER BY symbol_id, timestamp DESC
+                ) md ON s.symbol_id = md.symbol_id
+                WHERE s.is_active = FALSE
+                AND (
+                    -- Whitelisted symbols: always reactivate
+                    UPPER(TRIM(BOTH '@' FROM s.symbol_name)) = ANY(:whitelisted)
+                    OR
+                    -- Non-blacklisted symbols that meet market cap/volume criteria
+                    (UPPER(TRIM(BOTH '@' FROM s.symbol_name)) != ALL(:blacklisted)
+                     AND md.market_cap >= :min_market_cap
+                     AND md.volume_24h >= :min_volume)
+                )
+            """),
+            {
+                "min_market_cap": min_market_cap,
+                "min_volume": min_volume,
+                "whitelisted": list(whitelisted_symbols) if whitelisted_symbols else [],
+                "blacklisted": list(blacklisted_symbols) if blacklisted_symbols else []
+            }
+        ).fetchall()
+        
+        reactivated = [normalize_symbol(row[0]) for row in result if row[0]]
+        return reactivated
+    except Exception as e:
+        logger.error("find_symbols_to_reactivate_error", error=str(e), exc_info=True)
+        return []
 
 
 def get_ingestion_timeframes(db: Session) -> List[str]:
