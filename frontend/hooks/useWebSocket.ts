@@ -58,11 +58,11 @@ export function useWebSocket(symbol?: string, timeframe?: string) {
         try {
           const message = JSON.parse(event.data);
           if (message.type === "symbol_update") {
-            if (message.data.symbol === "BTCUSDT") {
-              console.log("current time:", new Date().toISOString());
-              console.log("timestamp:", message.data.timestamp);
-              console.log("BTCUSDT price updated:", message.data.price);
-            }
+            // if (message.data.symbol === "BTCUSDT") {
+            //   console.log("current time:", new Date().toISOString());
+            //   console.log("timestamp:", message.data.timestamp);
+            //   console.log("BTCUSDT price updated:", message.data.price);
+            // }
           }
           // console.log("WebSocket message received:", message);
           handleMessage(message);

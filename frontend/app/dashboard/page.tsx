@@ -333,16 +333,44 @@ export default function DashboardPage() {
         
         setAllSignals(filteredSignals);
         
-        // Check if there's a preset latestSignal that matches current symbol/timeframe
-        // This happens when navigating from the signals table
-        if (latestSignal && 
+        // Check for preset signal from sessionStorage (more reliable than store state)
+        let presetSignal: TradingSignal | null = null;
+        try {
+          const stored = sessionStorage.getItem('presetSignal');
+          if (stored) {
+            presetSignal = JSON.parse(stored);
+            // Clear it after reading
+            sessionStorage.removeItem('presetSignal');
+          }
+        } catch (e) {
+          console.warn("Failed to parse preset signal from sessionStorage:", e);
+        }
+        
+        // Also check store state as fallback
+        if (!presetSignal && latestSignal && 
             latestSignal.symbol === selectedSymbol && 
             latestSignal.timeframe === selectedTimeframe) {
+          presetSignal = latestSignal;
+        }
+        
+        // Check if there's a preset signal that matches current symbol/timeframe
+        if (presetSignal && 
+            presetSignal.symbol === selectedSymbol && 
+            presetSignal.timeframe === selectedTimeframe) {
           // Find the index of the preset signal in the filtered list
+          // Use multiple matching strategies for better reliability
           const presetIndex = filteredSignals.findIndex(
-            (s) => s.id === latestSignal.id || 
-                   (s.timestamp === latestSignal.timestamp && 
-                    s.entry1 === latestSignal.entry1)
+            (s) => {
+              // Try ID match first
+              if (s.id && presetSignal.id && s.id === presetSignal.id) return true;
+              // Try timestamp and entry price match
+              if (s.timestamp === presetSignal.timestamp && 
+                  (s.entry1 || s.price) === (presetSignal.entry1 || presetSignal.price)) return true;
+              // Try timestamp and symbol match (more lenient)
+              if (s.timestamp === presetSignal.timestamp && 
+                  s.symbol === presetSignal.symbol) return true;
+              return false;
+            }
           );
           
           if (presetIndex >= 0) {
@@ -350,12 +378,13 @@ export default function DashboardPage() {
             setCurrentSignalIndex(presetIndex);
             setLatestSignal(filteredSignals[presetIndex]);
           } else if (filteredSignals.length > 0) {
-            // Preset signal not found, use first signal
+            // Preset signal not found, but use the preset signal itself if it exists
+            // This handles cases where the signal might not be in the fetched list
             setCurrentSignalIndex(0);
-            setLatestSignal(filteredSignals[0]);
+            setLatestSignal(presetSignal);
           } else {
             setCurrentSignalIndex(0);
-            setLatestSignal(null);
+            setLatestSignal(presetSignal || null);
           }
         } else if (filteredSignals.length > 0) {
           // No preset signal, use first signal (latest) as default

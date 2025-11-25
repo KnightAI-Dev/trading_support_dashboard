@@ -426,16 +426,25 @@ export function SignalsTable({ signals, onRowClick }: SignalsTableProps) {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={(e) => {
+                      onClick={async (e) => {
                         e.stopPropagation(); // Prevent row click
-                        // Set symbol, timeframe, and signal
-                        setSelectedSymbol(signal.symbol as any);
-                        if (signal.timeframe) {
-                          setSelectedTimeframe(signal.timeframe as any);
+                        try {
+                          // Set symbol and timeframe first
+                          setSelectedSymbol(signal.symbol as any);
+                          if (signal.timeframe) {
+                            setSelectedTimeframe(signal.timeframe as any);
+                          }
+                          // Store the signal in sessionStorage as backup
+                          sessionStorage.setItem('presetSignal', JSON.stringify(signal));
+                          // Set the signal in store
+                          setLatestSignal(signal);
+                          // Small delay to ensure state updates propagate
+                          await new Promise(resolve => setTimeout(resolve, 50));
+                          // Navigate to dashboard
+                          router.push("/dashboard");
+                        } catch (error) {
+                          console.error("Error navigating to dashboard:", error);
                         }
-                        setLatestSignal(signal);
-                        // Navigate to dashboard
-                        router.push("/dashboard");
                       }}
                       className="h-7 px-3"
                       title="Go to dashboard with this signal"
