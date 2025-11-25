@@ -80,8 +80,8 @@ class AlertGenerator:
             # Extract swing timestamps from tuples
             swing_low_timestamp = low_dt if low_dt is not None and low_dt > 0 else None
             
-            # Get the confluence mark (highest available)
-            confluence_mark = level.confluence_mark or "none"
+            # Get the confluence score (cap at 3 for very_high)
+            confluence_score = min(level.confluence_count or 0, 3)
             
             # Get the fib level prices
             entry_level_07 = level.fib_bull_lower or 0.0
@@ -128,7 +128,7 @@ class AlertGenerator:
                 "swing_high_price": right_high_price,
                 "swing_low_timestamp": swing_low_timestamp,
                 "swing_high_timestamp": bullish_swing_high_timestamp,
-                "risk_score": confluence_mark,
+                "risk_score": confluence_score,
             })
             
             # Extract swing high timestamp for bearish alert (left_high)
@@ -148,7 +148,7 @@ class AlertGenerator:
                 "swing_high_price": left_high_price,
                 "swing_low_timestamp": swing_low_timestamp,
                 "swing_high_timestamp": bearish_swing_high_timestamp,
-                "risk_score": confluence_mark,
+                "risk_score": confluence_score,
             })
         return alerts
 
