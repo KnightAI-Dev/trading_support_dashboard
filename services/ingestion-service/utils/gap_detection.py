@@ -367,9 +367,9 @@ async def backfill_recent_candles(
         
         # Update mismatched candles and insert missing candles in a single transaction
         # Both operations must succeed or both must fail to maintain data consistency
-        inserted_count = 0
-        update_success = False
-        insert_success = False
+        # Track what was actually committed (not just attempted)
+        committed_inserts = 0
+        committed_updates = 0
         
         try:
             # Update mismatched candles
@@ -398,7 +398,6 @@ async def backfill_recent_candles(
                         "volume": Decimal(str(candle.volume))
                     })
                 
-                update_success = True
                 logger.info(
                     "backfill_candles_updated",
                     symbol=cleaned_symbol,
@@ -421,27 +420,30 @@ async def backfill_recent_candles(
             # Insert missing candles
             if missing_candles:
                 binance_service.save_candles(db, missing_candles)
-                inserted_count = len(missing_candles)
-                insert_success = True
                 
                 logger.info(
                     "backfill_candles_inserted",
                     symbol=cleaned_symbol,
                     timeframe=timeframe,
-                    candles_inserted=inserted_count,
+                    candles_inserted=len(missing_candles),
                     first_timestamp=missing_candles[0].timestamp.isoformat() if missing_candles else None,
                     last_timestamp=missing_candles[-1].timestamp.isoformat() if missing_candles else None
                 )
             
             # Commit all changes atomically (both UPDATE and INSERT)
-            if update_success or insert_success:
+            # Only set committed counts after successful commit
+            if candles_to_update or missing_candles:
                 db.commit()
+                # Track what was actually committed
+                committed_updates = len(candles_to_update) if candles_to_update else 0
+                committed_inserts = len(missing_candles) if missing_candles else 0
+                
                 logger.debug(
                     "backfill_transaction_committed",
                     symbol=cleaned_symbol,
                     timeframe=timeframe,
-                    updates=len(candles_to_update) if update_success else 0,
-                    inserts=inserted_count if insert_success else 0
+                    updates=committed_updates,
+                    inserts=committed_inserts
                 )
                 
         except Exception as e:
@@ -450,21 +452,19 @@ async def backfill_recent_candles(
                 "backfill_transaction_failed",
                 symbol=cleaned_symbol,
                 timeframe=timeframe,
-                update_success=update_success,
-                insert_success=insert_success,
                 candles_to_update=len(candles_to_update) if candles_to_update else 0,
                 missing_candles=len(missing_candles) if missing_candles else 0,
                 error=str(e),
                 exc_info=True
             )
             db.rollback()
-            # Reset counts on failure - nothing was committed
-            inserted_count = 0
-            update_success = False
+            # Ensure counts remain 0 - nothing was committed
+            committed_inserts = 0
+            committed_updates = 0
         
         # Return total count of candles processed (inserted + updated)
         # Only count operations that were successfully committed
-        total_processed = inserted_count + (len(candles_to_update) if update_success else 0)
+        total_processed = committed_inserts + committed_updates
         
         if total_processed == 0:
             logger.debug(

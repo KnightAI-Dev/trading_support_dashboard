@@ -183,7 +183,7 @@ export function ChartContainer({
 
     if (typeof width === "number") {
       try {
-        chartRef.current.applyOptions({ width });
+        chartRef.current.applyOptions({ width: Math.floor(width) });
       } catch (error) {
         console.warn("ChartContainer: Error applying width override", error);
       }
@@ -203,7 +203,7 @@ export function ChartContainer({
   useEffect(() => {
     if (!chartRef.current) return;
     try {
-      chartRef.current.applyOptions({ height });
+      chartRef.current.applyOptions({ height: Math.floor(height) });
     } catch (error) {
       console.warn("ChartContainer: Error applying height", error);
     }
