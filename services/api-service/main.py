@@ -150,29 +150,14 @@ class ConnectionManager:
         logger.info(f"WebSocket client connected: {ws_id}")
         return ws_id
     
-    def disconnect(self, ws_id: str):
+    async def disconnect(self, ws_id: str):
         """Remove a WebSocket connection"""
-        async def _disconnect():
-            async with self._lock:
-                if ws_id in self.active_connections:
-                    del self.active_connections[ws_id]
-                if ws_id in self.subscriptions:
-                    del self.subscriptions[ws_id]
-            logger.info(f"WebSocket client disconnected: {ws_id}")
-        
-        # Run in event loop if available
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.create_task(_disconnect())
-            else:
-                loop.run_until_complete(_disconnect())
-        except RuntimeError:
-            # No event loop, do synchronously
+        async with self._lock:
             if ws_id in self.active_connections:
                 del self.active_connections[ws_id]
             if ws_id in self.subscriptions:
                 del self.subscriptions[ws_id]
+        logger.info(f"WebSocket client disconnected: {ws_id}")
     
     async def subscribe(self, ws_id: str, symbol: str, timeframe: str):
         """Subscribe a client to symbol/timeframe updates"""
@@ -194,7 +179,7 @@ class ConnectionManager:
                 await websocket.send_json(message)
             except Exception as e:
                 logger.error(f"Error sending message to client {ws_id}: {e}")
-                self.disconnect(ws_id)
+                await self.disconnect(ws_id)
     
     async def broadcast_candle_update(self, candle_data: dict):
         """Broadcast candle update to subscribed clients"""
@@ -813,10 +798,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     "message": f"Unknown message type: {data.get('type')}"
                 })
     except WebSocketDisconnect:
-        manager.disconnect(ws_id)
+        await manager.disconnect(ws_id)
     except Exception as e:
         logger.error(f"WebSocket error: {e}", exc_info=True)
-        manager.disconnect(ws_id)
+        await manager.disconnect(ws_id)
 
 
 if __name__ == "__main__":
