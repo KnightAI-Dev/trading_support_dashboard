@@ -34,16 +34,29 @@ export function ConfluenceBadge({ type, className }: ConfluenceBadgeProps) {
 }
 
 interface ConfluenceBadgesProps {
-  confluence: string[] | string;
+  confluence: string[] | string | null | undefined;
   className?: string;
 }
 
 export function ConfluenceBadges({ confluence, className }: ConfluenceBadgesProps) {
-  const types = typeof confluence === "string" 
-    ? confluence.split(",").map((s) => s.trim() as ConfluenceType)
-    : (confluence as ConfluenceType[]);
+  // Handle null, undefined, or empty values
+  if (!confluence) return null;
 
-  if (!types || types.length === 0) return null;
+  // Normalize to array
+  let types: ConfluenceType[];
+  
+  if (typeof confluence === "string") {
+    // Handle comma-separated string
+    types = confluence.split(",").map((s) => s.trim() as ConfluenceType).filter(Boolean);
+  } else if (Array.isArray(confluence)) {
+    // Already an array
+    types = confluence.filter(Boolean) as ConfluenceType[];
+  } else {
+    // Invalid type, return null
+    return null;
+  }
+
+  if (types.length === 0) return null;
 
   return (
     <div className={cn("flex flex-wrap gap-1", className)}>

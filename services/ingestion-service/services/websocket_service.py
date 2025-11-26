@@ -1051,6 +1051,7 @@ class BinanceWebSocketService:
                                     if candles:
                                         with DatabaseManager() as db:
                                             binance_service.save_candles(db, candles)
+                                            db.commit()  # Commit after save_candles (save_candles does not commit)
                                         
                                         logger.debug(
                                             "rest_api_poll_success",

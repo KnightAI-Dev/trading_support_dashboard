@@ -34,7 +34,9 @@ export function ChartContainer({
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram"> | null>(null);
-  const [containerWidth, setContainerWidth] = useState(width || 800);
+  const [isChartReady, setIsChartReady] = useState(false);
+  const widthOverrideRef = useRef<number | undefined>(width);
+  const windowResizeHandlerRef = useRef<(() => void) | null>(null);
   const [oldestLoadedTime, setOldestLoadedTime] = useState<number | null>(null);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const loadMoreTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -51,12 +53,20 @@ export function ChartContainer({
     setCandles,
   } = useMarketStore();
 
-  // Initialize chart
+  // Initialize chart once
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    const chart = createChart(chartContainerRef.current, {
-      width: containerWidth,
+    const container = chartContainerRef.current;
+    const resolvedWidth =
+      typeof width === "number"
+        ? width
+        : container.clientWidth > 0
+        ? container.clientWidth
+        : 800;
+
+    const chart = createChart(container, {
+      width: Math.floor(resolvedWidth),
       height,
       layout: {
         background: { type: ColorType.Solid, color: "#0a0e13" },
@@ -111,26 +121,47 @@ export function ChartContainer({
     chartRef.current = chart;
     seriesRef.current = candlestickSeries;
     volumeSeriesRef.current = volumeSeries;
+    setIsChartReady(true);
 
-    // Handle resize
-    const handleResize = () => {
-      if (chartContainerRef.current && chartRef.current) {
-        try {
-          const newWidth = chartContainerRef.current.clientWidth;
-          setContainerWidth(newWidth);
-          chart.applyOptions({ width: newWidth });
-        } catch (error) {
-          // Chart might be disposed, ignore
-          console.warn("ChartContainer: Error resizing chart", error);
-        }
+    const updateWidth = (nextWidth?: number) => {
+      if (!chartRef.current || chartRef.current !== chart) return;
+      if (typeof nextWidth !== "number" || nextWidth <= 0 || Number.isNaN(nextWidth)) {
+        return;
+      }
+      try {
+        chart.applyOptions({ width: Math.floor(nextWidth) });
+      } catch (error) {
+        console.warn("ChartContainer: Error resizing chart", error);
       }
     };
 
-    window.addEventListener("resize", handleResize);
-    handleResize();
+    let resizeObserver: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver((entries) => {
+        if (widthOverrideRef.current !== undefined) return;
+        const entry = entries[0];
+        if (!entry) return;
+        updateWidth(entry.contentRect.width);
+      });
+      resizeObserver.observe(container);
+    } else {
+      const handleResize = () => {
+        if (widthOverrideRef.current !== undefined) return;
+        updateWidth(container.clientWidth);
+      };
+      windowResizeHandlerRef.current = handleResize;
+      window.addEventListener("resize", handleResize);
+      handleResize();
+    }
 
     return () => {
-      window.removeEventListener("resize", handleResize);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      if (windowResizeHandlerRef.current) {
+        window.removeEventListener("resize", windowResizeHandlerRef.current);
+        windowResizeHandlerRef.current = null;
+      }
       // Clear refs before disposing to prevent use after disposal
       chartRef.current = null;
       seriesRef.current = null;
@@ -143,7 +174,40 @@ export function ChartContainer({
         console.warn("ChartContainer: Error disposing chart", error);
       }
     };
-  }, [height, containerWidth]);
+  }, []); // Run only once on mount
+
+  // Reflect width prop changes without recreating the chart
+  useEffect(() => {
+    widthOverrideRef.current = width ?? undefined;
+    if (!chartRef.current) return;
+
+    if (typeof width === "number") {
+      try {
+        chartRef.current.applyOptions({ width });
+      } catch (error) {
+        console.warn("ChartContainer: Error applying width override", error);
+      }
+    } else if (chartContainerRef.current) {
+      const autoWidth = chartContainerRef.current.clientWidth;
+      if (autoWidth > 0) {
+        try {
+          chartRef.current.applyOptions({ width: Math.floor(autoWidth) });
+        } catch (error) {
+          console.warn("ChartContainer: Error applying auto width", error);
+        }
+      }
+    }
+  }, [width]);
+
+  // Reflect height prop changes without recreating the chart
+  useEffect(() => {
+    if (!chartRef.current) return;
+    try {
+      chartRef.current.applyOptions({ height });
+    } catch (error) {
+      console.warn("ChartContainer: Error applying height", error);
+    }
+  }, [height]);
 
   // Load more historical data when user scrolls back
   const loadMoreHistoricalData = useCallback(
@@ -580,6 +644,9 @@ export function ChartContainer({
       )
     : [];
 
+  const chartApi = isChartReady ? chartRef.current : null;
+  const priceSeries = isChartReady ? seriesRef.current : null;
+
   return (
     <div className="relative w-full h-full">
       <div ref={chartContainerRef} className="w-full" style={{ height: `${height}px` }} />
@@ -587,8 +654,8 @@ export function ChartContainer({
       {/* Show Swing High/Low markers based on chart settings */}
       {chartSettings.showSwings && (
         <SwingMarkers
-          chart={chartRef.current}
-          series={seriesRef.current}
+          chart={chartApi}
+          series={priceSeries}
           swings={currentSwings}
           candles={candles.filter(
             (c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe
@@ -601,8 +668,8 @@ export function ChartContainer({
       {/* Show Entry/SL/TP lines based on chart settings */}
       {chartSettings.showEntrySLTP && latestSignal && (
         <EntrySlTpLines
-          chart={chartRef.current}
-          series={seriesRef.current}
+          chart={chartApi}
+          series={priceSeries}
           signal={latestSignal}
         />
       )}
@@ -610,7 +677,7 @@ export function ChartContainer({
       {/* Show RSI indicator */}
       {chartSettings.showRSI && (
         <RSIIndicator
-          chart={chartRef.current}
+          chart={chartApi}
           candles={candles}
           selectedSymbol={selectedSymbol}
           selectedTimeframe={selectedTimeframe}
@@ -622,7 +689,7 @@ export function ChartContainer({
       {/* Candle Tooltip */}
       {chartSettings.showTooltip && (
         <CandleTooltip
-          chart={chartRef.current}
+          chart={chartApi}
           chartContainer={chartContainerRef.current}
           candles={candles}
           selectedSymbol={selectedSymbol}
@@ -632,7 +699,7 @@ export function ChartContainer({
 
       {/* Moving Averages */}
       <MovingAverages
-        chart={chartRef.current}
+        chart={chartApi}
         candles={candles}
         selectedSymbol={selectedSymbol}
         selectedTimeframe={selectedTimeframe}

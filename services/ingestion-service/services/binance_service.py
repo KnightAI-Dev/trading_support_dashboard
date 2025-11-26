@@ -6,6 +6,8 @@ import os
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Set
+from dataclasses import dataclass
+from decimal import Decimal
 import aiohttp
 from sqlalchemy.orm import Session
 from sqlalchemy import text
@@ -15,7 +17,6 @@ import structlog
 sys.path.append(os.path.join(os.path.dirname(__file__), '../../../'))
 
 from shared.database import DatabaseManager
-from shared.models import OHLCVCandle
 from shared.redis_client import publish_event
 
 # Import from local modules (relative to ingestion-service root)
@@ -26,6 +27,20 @@ from config.settings import BINANCE_API_URL, DEFAULT_TIMEFRAME, SYMBOL_LIMIT
 from database.repository import get_or_create_symbol_record, get_timeframe_id
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass
+class CandleData:
+    """Simple data structure for OHLCV candle data (not an ORM object)"""
+    symbol: str
+    timeframe: str
+    timestamp: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
 
 class BinanceIngestionService:
     """Service for ingesting data from Binance Futures/Perpetual API (fapi/v1)"""
@@ -261,12 +276,12 @@ class BinanceIngestionService:
             )
             return set()
     
-    def parse_klines(self, klines: List[List], symbol: str, timeframe: str) -> List[OHLCVCandle]:
-        """Parse klines data into OHLCVCandle objects"""
+    def parse_klines(self, klines: List[List], symbol: str, timeframe: str) -> List[CandleData]:
+        """Parse klines data into CandleData objects (simple data structures, not ORM objects)"""
         candles = []
         for kline in klines:
             try:
-                candle = OHLCVCandle(
+                candle = CandleData(
                     symbol=symbol,
                     timeframe=timeframe,
                     timestamp=datetime.fromtimestamp(kline[0] / 1000, tz=timezone.utc),
@@ -287,7 +302,7 @@ class BinanceIngestionService:
                 continue
         return candles
     
-    def save_candles(self, db: Session, candles: List[OHLCVCandle]):
+    def save_candles(self, db: Session, candles: List[CandleData]):
         """Save candles to database with symbol/timeframe foreign keys (BATCH INSERT)
         
         Note: Does not commit - caller should commit at service boundary
@@ -317,11 +332,11 @@ class BinanceIngestionService:
                     "symbol_id": symbol_id,
                     "timeframe_id": timeframe_id,
                     "timestamp": candle.timestamp,
-                    "open": float(candle.open),
-                    "high": float(candle.high),
-                    "low": float(candle.low),
-                    "close": float(candle.close),
-                    "volume": float(candle.volume)
+                    "open": Decimal(str(candle.open)),
+                    "high": Decimal(str(candle.high)),
+                    "low": Decimal(str(candle.low)),
+                    "close": Decimal(str(candle.close)),
+                    "volume": Decimal(str(candle.volume))
                 })
             
             stmt = text("""
