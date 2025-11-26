@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 
 from config.settings import StrategyConfig
-from indicators.swing_points import calculate_swing_points, filter_between
+from indicators.swing_points import calculate_swing_points, filter_between, enforce_strict_alternation
 from indicators.support_resistance import get_support_resistance_levels
 from indicators.fibonacci import calculate_fibonacci_levels
 from core.confluence import ConfluenceAnalyzer
@@ -67,11 +67,11 @@ class StrategyInterface:
         swing_high_low_candle_counts: int, 
     ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
         """
-        Calculate and filter swing highs and lows from candle data.
+        Calculate and filter swing highs and lows from the latest N candles in the dataframe.
         
         Args:
             timeframe_ticker_df: DataFrame with OHLC data (should have 'unix' column for datetime)
-            swing_high_low_candle_counts: Minimum number of candles required
+            swing_high_low_candle_counts: Number of latest candles to use (default: 200)
             
         Returns:
             Tuple of (swing_highs_list, swing_lows_list) where each list contains (datetime, price) tuples
@@ -80,16 +80,25 @@ class StrategyInterface:
             return [], []
         
         try:
-            # timeframe_ticker_df = timeframe_ticker_df[-swing_high_low_candle_counts:]
+            # Use only the latest N candles for swing point calculation
+            # This ensures we're working with recent data and improves performance
+            latest_candles_df = timeframe_ticker_df.tail(swing_high_low_candle_counts).copy()
+            
             swing_high_list, swing_low_list = calculate_swing_points(
-                timeframe_ticker_df, 
+                latest_candles_df, 
                 window=self.config.swing_window
             )
 
             filtered_swing_lows = filter_between(swing_high_list, swing_low_list, keep="min")
             filtered_swing_highs = filter_between(swing_low_list, swing_high_list, keep="max")
             
-            return filtered_swing_highs, filtered_swing_lows
+            # Enforce strict alternation to ensure proper high-low-high-low pattern
+            final_swing_highs_clean, final_swing_lows_clean = enforce_strict_alternation(
+                filtered_swing_highs, 
+                filtered_swing_lows
+            )
+            
+            return final_swing_highs_clean, final_swing_lows_clean
         except Exception as e:
             # Return empty lists on any error
             return [], []

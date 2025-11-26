@@ -110,15 +110,22 @@ def calculate_swing_points(
         # This is critical for very small price values like SHIB (0.008-0.009 range)
         def decimal_equals(series1, series2):
             """Compare two series using Decimal for exact equality"""
+            # Get common indices to avoid out-of-bounds errors
+            common_indices = series1.index.intersection(series2.index)
             result = pd.Series(False, index=series1.index)
-            for idx in series1.index:
-                val1 = series1.loc[idx]
-                val2 = series2.loc[idx]
-                if pd.notna(val1) and pd.notna(val2):
-                    # Convert to Decimal via string to preserve exact precision
-                    dec1 = to_decimal(val1)
-                    dec2 = to_decimal(val2)
-                    result.loc[idx] = (dec1 is not None and dec2 is not None and dec1 == dec2)
+            
+            for idx in common_indices:
+                try:
+                    val1 = series1.loc[idx]
+                    val2 = series2.loc[idx]
+                    if pd.notna(val1) and pd.notna(val2):
+                        # Convert to Decimal via string to preserve exact precision
+                        dec1 = to_decimal(val1)
+                        dec2 = to_decimal(val2)
+                        result.loc[idx] = (dec1 is not None and dec2 is not None and dec1 == dec2)
+                except (KeyError, IndexError):
+                    # Skip if index doesn't exist in result series
+                    continue
             return result
         
         # Check that the high equals the rolling max (it's a local maximum)
@@ -154,22 +161,37 @@ def calculate_swing_points(
         # Get datetime from 'unix' column if available, otherwise use 0
         has_unix = 'unix' in df_work.columns
         
-        swing_high_list = [
-            (int(df_work['unix'].iloc[idx]) if has_unix and pd.notna(df_work['unix'].iloc[idx]) else 0, float(df_work['high'].iloc[idx]))
-            for idx in df_work.index[is_swing_high]
-            if pd.notna(df_work['high'].iloc[idx])
-        ]
+        # Get indices where swing points are detected (these are index labels, not positions)
+        swing_high_indices = df_work.index[is_swing_high]
+        swing_low_indices = df_work.index[is_swing_low]
         
-        swing_low_list = [
-            (int(df_work['unix'].iloc[idx]) if has_unix and pd.notna(df_work['unix'].iloc[idx]) else 0, float(df_work['low'].iloc[idx]))
-            for idx in df_work.index[is_swing_low]
-            if pd.notna(df_work['low'].iloc[idx])
-        ]
+        swing_high_list = []
+        for idx in swing_high_indices:
+            try:
+                high_val = df_work['high'].loc[idx]
+                if pd.notna(high_val):
+                    unix_val = int(df_work['unix'].loc[idx]) if has_unix and pd.notna(df_work['unix'].loc[idx]) else 0
+                    swing_high_list.append((unix_val, float(high_val)))
+            except (KeyError, IndexError):
+                # Skip if index doesn't exist
+                continue
+        
+        swing_low_list = []
+        for idx in swing_low_indices:
+            try:
+                low_val = df_work['low'].loc[idx]
+                if pd.notna(low_val):
+                    unix_val = int(df_work['unix'].loc[idx]) if has_unix and pd.notna(df_work['unix'].loc[idx]) else 0
+                    swing_low_list.append((unix_val, float(low_val)))
+            except (KeyError, IndexError):
+                # Skip if index doesn't exist
+                continue
         
         return swing_high_list, swing_low_list
         
     except (ValueError, TypeError, KeyError, IndexError) as e:
         # Return empty lists on any error
+        print(e)
         return [], []
     except Exception:
         # Catch any other unexpected errors
