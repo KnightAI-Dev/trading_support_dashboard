@@ -64,7 +64,7 @@ export function SymbolManagerExample() {
  *     onSelect={(symbol) => setSelectedSymbol(symbol)}
  *   />
  *   <div className="flex-1">
- *     {/* Your main dashboard content */}
+ *     // Your main dashboard content
  *   </div>
  * </div>
  */

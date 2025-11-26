@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { IChartApi, ISeriesApi, Time } from "lightweight-charts";
+import {
+  IChartApi,
+  ISeriesApi,
+  LineStyle,
+  LineWidth,
+  Time,
+} from "lightweight-charts";
 import { TradingSignal } from "@/lib/api";
 
 interface EntrySlTpLinesProps {
@@ -9,6 +15,35 @@ interface EntrySlTpLinesProps {
   series: ISeriesApi<"Candlestick"> | null;
   signal: TradingSignal;
 }
+
+const COLORS = {
+  entry: "#2563eb",
+  stopLoss: "#facc15",
+  takeProfit: "#10b981",
+  swingHigh: "#a855f7",
+  swingLow: "#f97316",
+};
+
+const toEpochSeconds = (timestamp?: string | number | null): number | null => {
+  if (timestamp == null) return null;
+
+  const numericValue =
+    typeof timestamp === "number" ? timestamp : Number(timestamp);
+  if (!Number.isNaN(numericValue) && Number.isFinite(numericValue)) {
+    return numericValue > 1e11
+      ? Math.floor(numericValue / 1000)
+      : Math.floor(numericValue);
+  }
+
+  if (typeof timestamp === "string") {
+    const parsed = Date.parse(timestamp);
+    if (!Number.isNaN(parsed)) {
+      return Math.floor(parsed / 1000);
+    }
+  }
+
+  return null;
+};
 
 export function EntrySlTpLines({
   chart,
@@ -20,118 +55,132 @@ export function EntrySlTpLines({
   useEffect(() => {
     if (!chart || !series || !signal) return;
 
-    try {
-      // Check if chart is still valid (not disposed)
-      if (!chart.timeScale || !chart.addLineSeries) return;
+    const cleanupSeries = () => {
+      if (!chart?.removeSeries) {
+        seriesRef.current = [];
+        return;
+      }
 
-      // Cleanup previous series
       seriesRef.current.forEach((lineSeries) => {
         try {
           chart.removeSeries(lineSeries);
-        } catch (e) {
+        } catch {
           // Series might already be removed
         }
       });
       seriesRef.current = [];
+    };
+
+    try {
+      if (!chart.timeScale || !chart.addLineSeries) return cleanupSeries();
+
+      cleanupSeries();
 
       const timeScale = chart.timeScale();
       const visibleRange = timeScale.getVisibleRange();
-      
       if (!visibleRange) return;
 
-    const now = (Date.now() / 1000) as Time;
-    const future = (visibleRange.to as number + 86400) as Time; // 24 hours ahead
+      const nowSec = Math.floor(Date.now() / 1000);
+      const swingHighSeconds = toEpochSeconds(signal.swing_high_timestamp);
+      const swingLowSeconds = toEpochSeconds(signal.swing_low_timestamp);
+      const swingTimestamps = [swingHighSeconds, swingLowSeconds].filter(
+        (value): value is number => typeof value === "number"
+      );
+      const fallbackFrom =
+        typeof visibleRange.from === "number" ? visibleRange.from : nowSec - 86400;
+      const fromTimestamp =
+        swingTimestamps.length > 0
+          ? Math.min(...swingTimestamps) // Oldest swing timestamp anchors our overlays
+          : fallbackFrom;
+      const toTimestamp =
+        typeof visibleRange.to === "number" ? visibleRange.to : nowSec;
 
-    // Entry line
-    if (signal.entry1) {
-      const entrySeries = chart.addLineSeries({
-        color: "#3b82f6",
-        lineWidth: 2,
-        lineStyle: 1, // Dotted
-      });
-      entrySeries.setData([
-        { time: visibleRange.from as Time, value: signal.entry1 },
-        { time: future, value: signal.entry1 },
-      ]);
-      seriesRef.current.push(entrySeries);
-    }
+      const rangeStart = fromTimestamp as Time;
+      const extendedRangeEnd = (toTimestamp + 86400) as Time;
 
-    // Stop Loss
-    if (signal.sl) {
-      const slSeries = chart.addLineSeries({
-        color: "#ef4444",
-        lineWidth: 2,
-        lineStyle: 2, // Dashed
-      });
-      slSeries.setData([
-        { time: visibleRange.from as Time, value: signal.sl },
-        { time: future, value: signal.sl },
-      ]);
-      seriesRef.current.push(slSeries);
-    }
-
-    // Take Profit levels
-    if (signal.tp1) {
-      const tp1Series = chart.addLineSeries({
-        color: "#10b981",
-        lineWidth: 2,
-        lineStyle: 1,
-      });
-      tp1Series.setData([
-        { time: visibleRange.from as Time, value: signal.tp1 },
-        { time: future, value: signal.tp1 },
-      ]);
-      seriesRef.current.push(tp1Series);
-    }
-
-    if (signal.tp2) {
-      const tp2Series = chart.addLineSeries({
-        color: "#10b981",
-        lineWidth: 1.5,
-        lineStyle: 2,
-      });
-      tp2Series.setData([
-        { time: visibleRange.from as Time, value: signal.tp2 },
-        { time: future, value: signal.tp2 },
-      ]);
-      seriesRef.current.push(tp2Series);
-    }
-
-    if (signal.tp3) {
-      const tp3Series = chart.addLineSeries({
-        color: "#10b981",
-        lineWidth: 1,
-        lineStyle: 2,
-      });
-      tp3Series.setData([
-        { time: visibleRange.from as Time, value: signal.tp3 },
-        { time: future, value: signal.tp3 },
-      ]);
-      seriesRef.current.push(tp3Series);
-    }
-    } catch (error) {
-      // Chart might be disposed, ignore the error
-      console.warn("EntrySlTpLines: Chart is disposed", error);
-      return;
-    }
-
-    return () => {
-      // Cleanup series on unmount
-      try {
-        if (chart && chart.removeSeries) {
-          seriesRef.current.forEach((lineSeries) => {
-            try {
-              chart.removeSeries(lineSeries);
-            } catch (e) {
-              // Series might already be removed
-            }
-          });
+      const addHorizontalLine = (
+        value: number | null | undefined,
+        {
+          color,
+          lineWidth = 1 as LineWidth,
+          lineStyle = LineStyle.Solid,
+          title,
+        }: {
+          color: string;
+          lineWidth?: LineWidth;
+          lineStyle?: LineStyle;
+          title: string;
         }
-      } catch (error) {
-        // Chart might be disposed, ignore
-      }
-      seriesRef.current = [];
-    };
+      ) => {
+        if (value == null) return;
+
+        const lineSeries = chart.addLineSeries({
+          color,
+          lineWidth,
+          lineStyle,
+          title,
+          priceLineVisible: false,
+          lastValueVisible: false,
+          crosshairMarkerVisible: false,
+        });
+
+        lineSeries.setData([
+          { time: rangeStart, value },
+          { time: extendedRangeEnd, value },
+        ]);
+
+        seriesRef.current.push(lineSeries);
+      };
+
+      addHorizontalLine(signal.entry1, {
+        color: COLORS.entry,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        title: "Entry",
+      });
+
+      addHorizontalLine(signal.sl, {
+        color: COLORS.stopLoss,
+        lineWidth: 2,
+        lineStyle: LineStyle.LargeDashed,
+        title: "Stop Loss",
+      });
+
+      addHorizontalLine(signal.tp1, {
+        color: COLORS.takeProfit,
+        lineStyle: LineStyle.Solid,
+        title: "TP 1",
+      });
+      addHorizontalLine(signal.tp2, {
+        color: COLORS.takeProfit,
+        lineStyle: LineStyle.Dashed,
+        title: "TP 2",
+      });
+      addHorizontalLine(signal.tp3, {
+        color: COLORS.takeProfit,
+        lineStyle: LineStyle.Dotted,
+        title: "TP 3",
+      });
+
+      addHorizontalLine(signal.swing_high, {
+        color: COLORS.swingHigh,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        title: "Swing High",
+      });
+
+      addHorizontalLine(signal.swing_low, {
+        color: COLORS.swingLow,
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        title: "Swing Low",
+      });
+    } catch (error) {
+      console.warn("EntrySlTpLines: Chart is disposed", error);
+      cleanupSeries();
+    }
+
+    return cleanupSeries;
   }, [chart, series, signal]);
 
   return null;

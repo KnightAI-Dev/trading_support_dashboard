@@ -97,6 +97,15 @@ function StrategyConfigTab() {
     setConfig((prev) => ({ ...prev, [key]: value }));
   };
 
+  // Helper function to safely convert config values to string for numeric inputs
+  const getNumericValue = (value: string | number | object | undefined): string => {
+    if (value === undefined || value === null) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return String(value);
+    // If it's an object, return empty string (shouldn't happen for numeric fields)
+    return "";
+  };
+
   const handleSave = async () => {
     setIsSaving(true);
     setSaveMessage(null);
@@ -163,7 +172,7 @@ function StrategyConfigTab() {
                 <Input
                   id="market_data_limit"
                   type="number"
-                  value={config.market_data_limit || ""}
+                  value={getNumericValue(config.market_data_limit)}
                   onChange={(e) =>
                     handleUpdate("market_data_limit", e.target.value)
                   }
@@ -174,7 +183,7 @@ function StrategyConfigTab() {
                 <Input
                   id="symbol_limit"
                   type="number"
-                  value={config.symbol_limit || ""}
+                  value={getNumericValue(config.symbol_limit)}
                   onChange={(e) => handleUpdate("symbol_limit", e.target.value)}
                 />
               </div>
@@ -193,7 +202,7 @@ function StrategyConfigTab() {
                   id="bullish_fib_level_lower"
                   type="number"
                   step="0.001"
-                  value={config.bullish_fib_level_lower || ""}
+                  value={getNumericValue(config.bullish_fib_level_lower)}
                   onChange={(e) =>
                     handleUpdate("bullish_fib_level_lower", e.target.value)
                   }
@@ -207,7 +216,7 @@ function StrategyConfigTab() {
                   id="bullish_fib_level_higher"
                   type="number"
                   step="0.001"
-                  value={config.bullish_fib_level_higher || ""}
+                  value={getNumericValue(config.bullish_fib_level_higher)}
                   onChange={(e) =>
                     handleUpdate("bullish_fib_level_higher", e.target.value)
                   }
@@ -221,7 +230,7 @@ function StrategyConfigTab() {
                   id="bullish_sl_fib_level"
                   type="number"
                   step="0.001"
-                  value={config.bullish_sl_fib_level || ""}
+                  value={getNumericValue(config.bullish_sl_fib_level)}
                   onChange={(e) =>
                     handleUpdate("bullish_sl_fib_level", e.target.value)
                   }
@@ -233,7 +242,7 @@ function StrategyConfigTab() {
                   id="bearish_fib_level"
                   type="number"
                   step="0.001"
-                  value={config.bearish_fib_level || ""}
+                  value={getNumericValue(config.bearish_fib_level)}
                   onChange={(e) =>
                     handleUpdate("bearish_fib_level", e.target.value)
                   }
@@ -247,7 +256,7 @@ function StrategyConfigTab() {
                   id="bearish_sl_fib_level"
                   type="number"
                   step="0.001"
-                  value={config.bearish_sl_fib_level || ""}
+                  value={getNumericValue(config.bearish_sl_fib_level)}
                   onChange={(e) =>
                     handleUpdate("bearish_sl_fib_level", e.target.value)
                   }
@@ -266,7 +275,7 @@ function StrategyConfigTab() {
                   id="tp1_fib_level"
                   type="number"
                   step="0.001"
-                  value={config.tp1_fib_level || ""}
+                  value={getNumericValue(config.tp1_fib_level)}
                   onChange={(e) => handleUpdate("tp1_fib_level", e.target.value)}
                 />
               </div>
@@ -276,7 +285,7 @@ function StrategyConfigTab() {
                   id="tp2_fib_level"
                   type="number"
                   step="0.001"
-                  value={config.tp2_fib_level || ""}
+                  value={getNumericValue(config.tp2_fib_level)}
                   onChange={(e) => handleUpdate("tp2_fib_level", e.target.value)}
                 />
               </div>
@@ -286,7 +295,7 @@ function StrategyConfigTab() {
                   id="tp3_fib_level"
                   type="number"
                   step="0.001"
-                  value={config.tp3_fib_level || ""}
+                  value={getNumericValue(config.tp3_fib_level)}
                   onChange={(e) => handleUpdate("tp3_fib_level", e.target.value)}
                 />
               </div>
@@ -304,7 +313,7 @@ function StrategyConfigTab() {
                 <Input
                   id="candle_counts_for_swing_high_low"
                   type="number"
-                  value={config.candle_counts_for_swing_high_low || ""}
+                  value={getNumericValue(config.candle_counts_for_swing_high_low)}
                   onChange={(e) =>
                     handleUpdate(
                       "candle_counts_for_swing_high_low",
@@ -318,7 +327,7 @@ function StrategyConfigTab() {
                 <Input
                   id="sensible_window"
                   type="number"
-                  value={config.sensible_window || ""}
+                  value={getNumericValue(config.sensible_window)}
                   onChange={(e) =>
                     handleUpdate("sensible_window", e.target.value)
                   }
@@ -329,7 +338,7 @@ function StrategyConfigTab() {
                 <Input
                   id="swing_window"
                   type="number"
-                  value={config.swing_window || ""}
+                  value={getNumericValue(config.swing_window)}
                   onChange={(e) => handleUpdate("swing_window", e.target.value)}
                 />
               </div>
@@ -395,6 +404,14 @@ function IngestionConfigTab() {
 
   const handleUpdate = (key: string, value: string) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
+  };
+
+  // Helper function to safely convert config values to string for numeric inputs
+  const getNumericValue = (value: string | number | undefined): string => {
+    if (value === undefined || value === null) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number") return String(value);
+    return "";
   };
 
   const handleSave = async () => {
@@ -489,7 +506,7 @@ function IngestionConfigTab() {
                 <Input
                   id="limit_volume_up"
                   type="number"
-                  value={config.limit_volume_up || ""}
+                  value={getNumericValue(config.limit_volume_up)}
                   onChange={(e) =>
                     handleUpdate("limit_volume_up", e.target.value)
                   }
@@ -513,7 +530,7 @@ function IngestionConfigTab() {
                 <Input
                   id="limit_market_cap"
                   type="number"
-                  value={config.limit_market_cap || ""}
+                  value={getNumericValue(config.limit_market_cap)}
                   onChange={(e) =>
                     handleUpdate("limit_market_cap", e.target.value)
                   }
@@ -530,7 +547,7 @@ function IngestionConfigTab() {
                 <Input
                   id="coingecko_limit"
                   type="number"
-                  value={config.coingecko_limit || ""}
+                  value={getNumericValue(config.coingecko_limit)}
                   onChange={(e) =>
                     handleUpdate("coingecko_limit", e.target.value)
                   }
@@ -554,7 +571,7 @@ function IngestionConfigTab() {
                 <Input
                   id="backfill_limit"
                   type="number"
-                  value={config.backfill_limit || ""}
+                  value={getNumericValue(config.backfill_limit)}
                   onChange={(e) =>
                     handleUpdate("backfill_limit", e.target.value)
                   }

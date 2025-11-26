@@ -157,8 +157,8 @@ export function RSIIndicator({
           top: Math.max(0.05, Math.min(0.9, topMargin)), // Clamp between 5% and 90%
           bottom: 0.05,
         },
-        minimum: 0,
-        maximum: 100,
+        // Note: minimum/maximum are not valid properties in PriceScaleOptions
+        // The chart will auto-scale based on RSI data (0-100 range)
       });
 
       // Set RSI data

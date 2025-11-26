@@ -91,7 +91,7 @@ export function MovingAverages({
         if (ma7Data.length > 0) {
           const ma7Series = chart.addLineSeries({
             color: "#3b82f6", // Blue
-            lineWidth: 1.5,
+            lineWidth: 1,
             title: "MA(7)",
             priceLineVisible: false,
             lastValueVisible: true,
@@ -107,7 +107,7 @@ export function MovingAverages({
         if (ma25Data.length > 0) {
           const ma25Series = chart.addLineSeries({
             color: "#f59e0b", // Amber/Orange
-            lineWidth: 1.5,
+            lineWidth: 1,
             title: "MA(25)",
             priceLineVisible: false,
             lastValueVisible: true,
@@ -123,7 +123,7 @@ export function MovingAverages({
         if (ma99Data.length > 0) {
           const ma99Series = chart.addLineSeries({
             color: "#8b5cf6", // Purple
-            lineWidth: 1.5,
+            lineWidth: 1,
             title: "MA(99)",
             priceLineVisible: false,
             lastValueVisible: true,
