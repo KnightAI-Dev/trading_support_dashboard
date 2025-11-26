@@ -6,11 +6,14 @@ which are used to identify key price levels for trading strategies.
 
 A swing high is a local maximum where the price is higher than surrounding bars.
 A swing low is a local minimum where the price is lower than surrounding bars.
+
+Uses Decimal for exact price comparisons to avoid floating-point precision issues.
 """
 from typing import List, Tuple, Optional
 from decimal import Decimal
 import pandas as pd
 import numpy as np
+from utils.decimal_utils import to_decimal, to_decimal_safe
 
 
 def calculate_swing_points(
@@ -93,6 +96,8 @@ def calculate_swing_points(
         # Calculate rolling window size (center=True means window extends both ways)
         rolling_window = 2 * window + 1
         
+        # Use shared Decimal utility for consistency
+        
         # Identify Swing Highs
         # A swing high must be the maximum in its rolling window AND have valid neighbors
         high_rolling_max = df_work['high'].rolling(
@@ -101,10 +106,26 @@ def calculate_swing_points(
             min_periods=rolling_window
         ).max()
         
+        # Use Decimal for exact comparison to avoid floating point precision issues
+        # This is critical for very small price values like SHIB (0.008-0.009 range)
+        def decimal_equals(series1, series2):
+            """Compare two series using Decimal for exact equality"""
+            result = pd.Series(False, index=series1.index)
+            for idx in series1.index:
+                val1 = series1.loc[idx]
+                val2 = series2.loc[idx]
+                if pd.notna(val1) and pd.notna(val2):
+                    # Convert to Decimal via string to preserve exact precision
+                    dec1 = to_decimal(val1)
+                    dec2 = to_decimal(val2)
+                    result.loc[idx] = (dec1 is not None and dec2 is not None and dec1 == dec2)
+            return result
+        
         # Check that the high equals the rolling max (it's a local maximum)
+        # Use Decimal comparison for exact precision with small price values
         # AND has valid data on both sides
         is_swing_high = (
-            (df_work['high'] == high_rolling_max) &
+            decimal_equals(df_work['high'], high_rolling_max) &
             (df_work['high'].shift(window).notna()) &
             (df_work['high'].shift(-window).notna()) &
             (df_work['high'].notna())
@@ -119,9 +140,10 @@ def calculate_swing_points(
         ).min()
         
         # Check that the low equals the rolling min (it's a local minimum)
+        # Use Decimal comparison for exact precision with small price values
         # AND has valid data on both sides
         is_swing_low = (
-            (df_work['low'] == low_rolling_min) &
+            decimal_equals(df_work['low'], low_rolling_min) &
             (df_work['low'].shift(window).notna()) &
             (df_work['low'].shift(-window).notna()) &
             (df_work['low'].notna())
@@ -232,17 +254,17 @@ def filter_between(
         filtered.append(selected)
     
     # Ensure outermost points are preserved if they exist
-    if points_other:
-        first_point = points_other[0]
-        last_point = points_other[-1]
+    # if points_other:
+    #     first_point = points_other[0]
+    #     last_point = points_other[-1]
         
-        # Add left-most point if not already included
-        if first_point not in filtered:
-            filtered.insert(0, first_point)
+    #     # Add left-most point if not already included
+    #     if first_point not in filtered:
+    #         filtered.insert(0, first_point)
         
-        # Add right-most point if not already included
-        if last_point not in filtered:
-            filtered.append(last_point)
+    #     # Add right-most point if not already included
+    #     if last_point not in filtered:
+    #         filtered.append(last_point)
     
     # Return sorted by datetime to ensure consistent ordering
     return sorted(filtered, key=lambda x: x[0])
@@ -258,6 +280,8 @@ def enforce_strict_alternation(
     If two highs or two lows appear consecutively, keep only the more extreme one.
     This ensures that swing points alternate: high, low, high, low, etc.
     
+    Uses Decimal for exact price comparisons to handle very small price values.
+    
     Args:
         highs: List of (datetime, price) tuples for swing highs.
         lows: List of (datetime, price) tuples for swing lows.
@@ -272,6 +296,13 @@ def enforce_strict_alternation(
     
     if not isinstance(highs, list) or not isinstance(lows, list):
         return [], []
+    
+    # Helper function to convert price to Decimal for exact comparison
+    def price_to_decimal(price):
+        """Convert price to Decimal for exact comparison"""
+        if isinstance(price, Decimal):
+            return price
+        return Decimal(str(price))
     
     # Sort by datetime to ensure chronological order
     highs = sorted(highs, key=lambda x: x[0])
@@ -292,19 +323,28 @@ def enforce_strict_alternation(
     
     for dt, val, point_type in merged:
         # Validate tuple structure
-        if not isinstance(dt, (int, np.integer)) or not isinstance(val, (int, float, np.floating)):
+        if not isinstance(dt, (int, np.integer)) or not isinstance(val, (int, float, np.floating, Decimal)):
+            continue
+        
+        # Convert price to Decimal for exact comparison
+        val_decimal = to_decimal(val)
+        if val_decimal is None:
             continue
         
         # If two of the same type appear consecutively, keep only the more extreme one
         if point_type == last_type:
             if point_type == 'H':
-                # For highs, keep the higher one
-                if final_highs and val > final_highs[-1][1]:
-                    final_highs[-1] = (dt, val)
+                # For highs, keep the higher one using Decimal comparison
+                if final_highs:
+                    last_price_decimal = to_decimal(final_highs[-1][1])
+                    if last_price_decimal is not None and val_decimal > last_price_decimal:
+                        final_highs[-1] = (dt, val)
             else:  # point_type == 'L'
-                # For lows, keep the lower one
-                if final_lows and val < final_lows[-1][1]:
-                    final_lows[-1] = (dt, val)
+                # For lows, keep the lower one using Decimal comparison
+                if final_lows:
+                    last_price_decimal = to_decimal(final_lows[-1][1])
+                    if last_price_decimal is not None and val_decimal < last_price_decimal:
+                        final_lows[-1] = (dt, val)
         else:
             # Different type - add to appropriate list
             if point_type == 'H':
@@ -367,13 +407,18 @@ def filter_rate(
     clean_highs = []
     clean_lows = lows.copy()  # Start with all lows, remove as needed
     
+    # Convert rate to Decimal for exact comparison
+    rate_decimal = to_decimal_safe(rate)
+    
     # Process each swing high
     for h_dt, h_val in highs:
         # Validate high tuple
-        if not isinstance(h_dt, (int, np.integer)) or not isinstance(h_val, (int, float, np.floating)):
+        if not isinstance(h_dt, (int, np.integer)) or not isinstance(h_val, (int, float, np.floating, Decimal)):
             continue
         
-        if h_val <= 0:
+        # Convert high value to Decimal
+        h_val_decimal = to_decimal(h_val)
+        if h_val_decimal is None or h_val_decimal <= 0:
             continue  # Invalid price
         
         # Find nearest left low (after this high - later in time)
@@ -393,23 +438,30 @@ def filter_rate(
             clean_highs.append((h_dt, h_val))
             continue
         
+        # Convert low prices to Decimal
+        left_low_decimal = to_decimal(left_low[1])
+        right_low_decimal = to_decimal(right_low[1])
+        
+        if left_low_decimal is None or right_low_decimal is None:
+            continue
+        
         # Validate low prices
-        if left_low[1] <= 0 or right_low[1] <= 0:
+        if left_low_decimal <= 0 or right_low_decimal <= 0:
             continue  # Invalid prices
         
-        # Compute percentage move (price increase from low to high)
+        # Compute percentage move (price increase from low to high) using Decimal
         try:
-            left_rate = (h_val - left_low[1]) / left_low[1]
-            right_rate = (h_val - right_low[1]) / right_low[1]
+            left_rate = (h_val_decimal - left_low_decimal) / left_low_decimal
+            right_rate = (h_val_decimal - right_low_decimal) / right_low_decimal
         except (ZeroDivisionError, TypeError, ValueError):
             # Skip if we can't calculate rates
             continue
         
         # CASE 1: Both sides fail the rate requirement
-        if left_rate < rate and right_rate < rate:
+        if left_rate < rate_decimal and right_rate < rate_decimal:
             # Remove the HIGH completely
-            # Keep the lower of the two lows (more significant)
-            lower_low = left_low if left_low[1] < right_low[1] else right_low
+            # Keep the lower of the two lows (more significant) using Decimal comparison
+            lower_low = left_low if left_low_decimal < right_low_decimal else right_low
             
             # Remove both lows from clean_lows, then add back the lower one
             clean_lows = [
@@ -422,14 +474,14 @@ def filter_rate(
             continue
         
         # CASE 2: Only left side fails the rate requirement
-        if left_rate < rate:
+        if left_rate < rate_decimal:
             # Remove the left low and the high
             if left_low in clean_lows:
                 clean_lows.remove(left_low)
             continue  # Don't add high to clean_highs
         
         # CASE 3: Only right side fails the rate requirement
-        if right_rate < rate:
+        if right_rate < rate_decimal:
             # Remove the right low and the high
             if right_low in clean_lows:
                 clean_lows.remove(right_low)

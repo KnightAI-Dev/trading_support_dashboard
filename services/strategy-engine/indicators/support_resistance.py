@@ -4,9 +4,13 @@ Support and Resistance Level Detection
 This module provides functions to detect support and resistance levels in price data.
 Support levels are price points where the price tends to bounce upward.
 Resistance levels are price points where the price tends to bounce downward.
+
+Uses Decimal for exact price comparisons to avoid floating-point precision issues.
 """
 from typing import List, Tuple, Optional
+from decimal import Decimal
 import pandas as pd
+from utils.decimal_utils import to_decimal, decimal_compare
 
 
 def support(
@@ -50,21 +54,27 @@ def support(
         
         # Get the price at the candidate support level
         support_price = price_column.iloc[candle_index]
+        support_price_decimal = to_decimal(support_price)
         
-        # Check all candles in the before window
+        if support_price_decimal is None:
+            return None
+        
+        # Check all candles in the before window using Decimal comparison
         before_start = candle_index - before_candle_count
         before_end = candle_index
         
         for i in range(before_start, before_end):
-            if price_column.iloc[i] < support_price:
+            price_decimal = to_decimal(price_column.iloc[i])
+            if price_decimal is not None and decimal_compare(price_decimal, support_price_decimal) < 0:
                 return False  # Found a lower price before, not a support
         
-        # Check all candles in the after window
+        # Check all candles in the after window using Decimal comparison
         after_start = candle_index + 1
         after_end = candle_index + after_candle_count + 1
         
         for i in range(after_start, after_end):
-            if price_column.iloc[i] < support_price:
+            price_decimal = to_decimal(price_column.iloc[i])
+            if price_decimal is not None and decimal_compare(price_decimal, support_price_decimal) < 0:
                 return False  # Found a lower price after, not a support
         
         # If we get here, this candle has the lowest price in the window
@@ -116,21 +126,27 @@ def resistance(
         
         # Get the price at the candidate resistance level
         resistance_price = price_column.iloc[candle_index]
+        resistance_price_decimal = to_decimal(resistance_price)
         
-        # Check all candles in the before window
+        if resistance_price_decimal is None:
+            return None
+        
+        # Check all candles in the before window using Decimal comparison
         before_start = candle_index - before_candle_count
         before_end = candle_index
         
         for i in range(before_start, before_end):
-            if price_column.iloc[i] > resistance_price:
+            price_decimal = to_decimal(price_column.iloc[i])
+            if price_decimal is not None and decimal_compare(price_decimal, resistance_price_decimal) > 0:
                 return False  # Found a higher price before, not a resistance
         
-        # Check all candles in the after window
+        # Check all candles in the after window using Decimal comparison
         after_start = candle_index + 1
         after_end = candle_index + after_candle_count + 1
         
         for i in range(after_start, after_end):
-            if price_column.iloc[i] > resistance_price:
+            price_decimal = to_decimal(price_column.iloc[i])
+            if price_decimal is not None and decimal_compare(price_decimal, resistance_price_decimal) > 0:
                 return False  # Found a higher price after, not a resistance
         
         # If we get here, this candle has the highest price in the window

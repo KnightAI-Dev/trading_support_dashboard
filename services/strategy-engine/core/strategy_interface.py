@@ -12,7 +12,7 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 
 from config.settings import StrategyConfig
-from indicators.swing_points import calculate_swing_points, filter_between, filter_rate
+from indicators.swing_points import calculate_swing_points, filter_between
 from indicators.support_resistance import get_support_resistance_levels
 from indicators.fibonacci import calculate_fibonacci_levels
 from core.confluence import ConfluenceAnalyzer
@@ -65,7 +65,6 @@ class StrategyInterface:
         self, 
         timeframe_ticker_df: pd.DataFrame, 
         swing_high_low_candle_counts: int, 
-        swing_pruning_rate: float
     ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
         """
         Calculate and filter swing highs and lows from candle data.
@@ -73,7 +72,6 @@ class StrategyInterface:
         Args:
             timeframe_ticker_df: DataFrame with OHLC data (should have 'unix' column for datetime)
             swing_high_low_candle_counts: Minimum number of candles required
-            swing_pruning_rate: Rate threshold for filtering swing points
             
         Returns:
             Tuple of (swing_highs_list, swing_lows_list) where each list contains (datetime, price) tuples
@@ -82,6 +80,7 @@ class StrategyInterface:
             return [], []
         
         try:
+            # timeframe_ticker_df = timeframe_ticker_df[-swing_high_low_candle_counts:]
             swing_high_list, swing_low_list = calculate_swing_points(
                 timeframe_ticker_df, 
                 window=self.config.swing_window
@@ -89,11 +88,8 @@ class StrategyInterface:
 
             filtered_swing_lows = filter_between(swing_high_list, swing_low_list, keep="min")
             filtered_swing_highs = filter_between(swing_low_list, swing_high_list, keep="max")
-
-            filtered_swing_high_list, filtered_swing_low_list = \
-                filter_rate(filtered_swing_highs, filtered_swing_lows, swing_pruning_rate)
             
-            return filtered_swing_high_list, filtered_swing_low_list
+            return filtered_swing_highs, filtered_swing_lows
         except Exception as e:
             # Return empty lists on any error
             return [], []
@@ -158,15 +154,12 @@ class StrategyInterface:
             return {"alerts_4h": [], "alerts_30m": []}
         
         # Step 2: Get swing highs and lows
-        swing_pruning_rate = self.config.get_pruning_score(asset_symbol)
-        
         # Get swing highs and lows for available timeframes
         swing_highs_4h, swing_lows_4h = [], []
         if has_4h:
             swing_highs_4h, swing_lows_4h = self.get_swingHL(
                 candles_4h_df, 
                 self.config.candle_counts_for_swing_high_low,
-                swing_pruning_rate
             )
             if swing_highs_4h is None:
                 swing_highs_4h = []
@@ -178,7 +171,6 @@ class StrategyInterface:
             swing_highs_30m, swing_lows_30m = self.get_swingHL(
                 candles_30m_df,
                 self.config.candle_counts_for_swing_high_low,
-                swing_pruning_rate
             )
             if swing_highs_30m is None:
                 swing_highs_30m = []

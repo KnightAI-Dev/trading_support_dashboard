@@ -2,11 +2,14 @@
 Confluence Analysis Module
 
 This module handles confirmation of Fibonacci levels against support/resistance
-and calculates confluence scores.
+and calculates confluence scores. Uses Decimal for exact price comparisons to
+avoid floating-point precision issues with very small price values.
 """
 from typing import List, Dict, Tuple, Optional
+from decimal import Decimal
 from core.models import FibResult, ConfirmedFibResult
 from config.settings import StrategyConfig
+from utils.decimal_utils import to_decimal, decimal_relative_diff, to_decimal_safe
 
 
 class ConfluenceAnalyzer:
@@ -88,29 +91,47 @@ class ConfluenceAnalyzer:
                 sup_res_prices = [p for _, p in support] + [p for _, p in resistance]
                 sup_res_prices_sorted = sorted(sup_res_prices)
                 
-                # Check if any Fibonacci level matches
+                # Check if any Fibonacci level matches using Decimal for exact comparison
                 is_matched = False
                 
-                # Check bearish Fibonacci level
+                # Convert tolerance to Decimal
+                tolerance_decimal = to_decimal_safe(self.config.swing_sup_res_tolerance_pct)
+                
+                # Check bearish Fibonacci level using Decimal
                 if not is_matched and fib_bear_level is not None:
-                    for sup_res_price in sup_res_prices_sorted:
-                        if abs(fib_bear_level - sup_res_price) / max(abs(fib_bear_level), abs(sup_res_price), 1e-10) <= self.config.swing_sup_res_tolerance_pct:
-                            is_matched = True
-                            break
+                    fib_bear_decimal = to_decimal(fib_bear_level)
+                    if fib_bear_decimal is not None:
+                        for sup_res_price in sup_res_prices_sorted:
+                            sup_res_decimal = to_decimal(sup_res_price)
+                            if sup_res_decimal is not None:
+                                rel_diff = decimal_relative_diff(fib_bear_decimal, sup_res_decimal)
+                                if rel_diff is not None and rel_diff <= tolerance_decimal:
+                                    is_matched = True
+                                    break
                 
-                # Check bullish Fibonacci lower level
+                # Check bullish Fibonacci lower level using Decimal
                 if not is_matched and fib_bull_lower_level is not None:
-                    for sup_res_price in sup_res_prices_sorted:
-                        if abs(fib_bull_lower_level - sup_res_price) / max(abs(fib_bull_lower_level), abs(sup_res_price), 1e-10) <= self.config.swing_sup_res_tolerance_pct:
-                            is_matched = True
-                            break
+                    fib_bull_lower_decimal = to_decimal(fib_bull_lower_level)
+                    if fib_bull_lower_decimal is not None:
+                        for sup_res_price in sup_res_prices_sorted:
+                            sup_res_decimal = to_decimal(sup_res_price)
+                            if sup_res_decimal is not None:
+                                rel_diff = decimal_relative_diff(fib_bull_lower_decimal, sup_res_decimal)
+                                if rel_diff is not None and rel_diff <= tolerance_decimal:
+                                    is_matched = True
+                                    break
                 
-                # Check bullish Fibonacci higher level
+                # Check bullish Fibonacci higher level using Decimal
                 if not is_matched and fib_bull_higher_level is not None:
-                    for sup_res_price in sup_res_prices_sorted:
-                        if abs(fib_bull_higher_level - sup_res_price) / max(abs(fib_bull_higher_level), abs(sup_res_price), 1e-10) <= self.config.swing_sup_res_tolerance_pct:
-                            is_matched = True
-                            break
+                    fib_bull_higher_decimal = to_decimal(fib_bull_higher_level)
+                    if fib_bull_higher_decimal is not None:
+                        for sup_res_price in sup_res_prices_sorted:
+                            sup_res_decimal = to_decimal(sup_res_price)
+                            if sup_res_decimal is not None:
+                                rel_diff = decimal_relative_diff(fib_bull_higher_decimal, sup_res_decimal)
+                                if rel_diff is not None and rel_diff <= tolerance_decimal:
+                                    is_matched = True
+                                    break
                 
                 timeframe_matches[tf_key] = is_matched
             
