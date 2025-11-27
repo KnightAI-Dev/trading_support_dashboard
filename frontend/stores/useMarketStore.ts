@@ -6,7 +6,10 @@ import {
   ChartSettings,
   DEFAULT_SYMBOLS,
   DEFAULT_TIMEFRAMES,
+  IndicatorType,
+  IndicatorConfig,
 } from "@/lib/types";
+import { INDICATOR_REGISTRY } from "@/lib/indicators";
 
 interface MarketState {
   selectedSymbol: Symbol;
@@ -36,6 +39,9 @@ interface MarketState {
   addSignal: (signal: TradingSignal) => void;
   setLatestSignal: (signal: TradingSignal | null) => void;
   updateChartSettings: (settings: Partial<ChartSettings>) => void;
+  addIndicator: (type: IndicatorType) => void;
+  removeIndicator: (id: string) => void;
+  updateIndicatorSettings: (id: string, settings: Partial<IndicatorConfig>) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
   setMarketMetadata: (metadata: MarketMetadata) => void;
@@ -54,6 +60,7 @@ const defaultChartSettings: ChartSettings = {
   showMA7: false,  // Hide MA(7) by default
   showMA25: false,  // Hide MA(25) by default
   showMA99: false,  // Hide MA(99) by default
+  activeIndicators: [], // Dynamic list of active indicators
 };
 
 export const useMarketStore = create<MarketState>((set) => ({
@@ -152,6 +159,51 @@ export const useMarketStore = create<MarketState>((set) => ({
   updateChartSettings: (settings) =>
     set((state) => ({
       chartSettings: { ...state.chartSettings, ...settings },
+    })),
+  addIndicator: (type) =>
+    set((state) => {
+      const definition = INDICATOR_REGISTRY.find((ind) => ind.type === type);
+      if (!definition) return state;
+
+      // Check if already added
+      if (state.chartSettings.activeIndicators.some((ind) => ind.type === type)) {
+        return state;
+      }
+
+      const newIndicator: IndicatorConfig = {
+        id: `${type}-${Date.now()}`,
+        type,
+        name: definition.name,
+        category: definition.category,
+        paneIndex: definition.requiresSeparatePane ? undefined : 0,
+        settings: { ...definition.defaultSettings },
+        visible: true,
+      };
+
+      return {
+        chartSettings: {
+          ...state.chartSettings,
+          activeIndicators: [...state.chartSettings.activeIndicators, newIndicator],
+        },
+      };
+    }),
+  removeIndicator: (id) =>
+    set((state) => ({
+      chartSettings: {
+        ...state.chartSettings,
+        activeIndicators: state.chartSettings.activeIndicators.filter(
+          (ind) => ind.id !== id
+        ),
+      },
+    })),
+  updateIndicatorSettings: (id, settings) =>
+    set((state) => ({
+      chartSettings: {
+        ...state.chartSettings,
+        activeIndicators: state.chartSettings.activeIndicators.map((ind) =>
+          ind.id === id ? { ...ind, ...settings } : ind
+        ),
+      },
     })),
   setLoading: (loading) => set({ isLoading: loading }),
   setError: (error) => set({ error }),

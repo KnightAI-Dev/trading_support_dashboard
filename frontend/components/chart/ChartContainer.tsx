@@ -12,6 +12,7 @@ import {
   CandlestickData,
   HistogramData,
   createChart,
+  AreaSeries,
 } from "lightweight-charts";
 import { useMarketStore } from "@/stores/useMarketStore";
 import { Candle, fetchCandles } from "@/lib/api";
@@ -23,7 +24,9 @@ import { EntrySlTpLines } from "./EntrySlTpLines";
 import { RSIIndicator } from "./RSIIndicator";
 import { CandleTooltip } from "./CandleTooltip";
 import { MovingAverages } from "./MovingAverages";
+import { DynamicIndicator } from "./DynamicIndicator";
 import { Loader2 } from "lucide-react";
+import { INDICATOR_REGISTRY } from "@/lib/indicators";
 
 interface ChartContainerProps {
   width?: number;
@@ -48,6 +51,9 @@ export function ChartContainer({
   const pricePaneRef = useRef<IPaneApi<Time> | null>(null);
   const rsiPaneRef = useRef<IPaneApi<Time> | null>(null);
   const [rsiPaneState, setRsiPaneState] = useState<IPaneApi<Time> | null>(null);
+  // Map to track panes for indicators that need separate panes
+  const indicatorPanesRef = useRef<Map<string, IPaneApi<Time>>>(new Map());
+  const [indicatorPanes, setIndicatorPanes] = useState<Map<string, IPaneApi<Time>>>(new Map());
 
   const {
     candles,
@@ -263,6 +269,70 @@ export function ChartContainer({
       }
     }
   }, [chartSettings.showRSI, chartSettings.rsiHeight, isChartReady]);
+
+  // Manage panes for dynamic indicators that need separate panes
+  useEffect(() => {
+    if (!isChartReady || !chartRef.current || !pricePaneRef.current) return;
+
+    const chart = chartRef.current;
+    const pricePane = pricePaneRef.current;
+    const activeIndicators = chartSettings.activeIndicators || [];
+    
+    // Get indicators that need separate panes
+    const indicatorsNeedingPanes = activeIndicators.filter((ind) => {
+      const definition = INDICATOR_REGISTRY.find((d) => d.type === ind.type);
+      return definition?.requiresSeparatePane && ind.visible;
+    });
+
+    // Create panes for indicators that need them
+    const newPanes = new Map<string, IPaneApi<Time>>();
+    
+    indicatorsNeedingPanes.forEach((indicator) => {
+      let pane = indicatorPanesRef.current.get(indicator.id);
+      if (!pane) {
+        try {
+          pane = chart.addPane();
+          pane.setPreserveEmptyPane(true);
+          indicatorPanesRef.current.set(indicator.id, pane);
+        } catch (error) {
+          console.warn(`ChartContainer: Error adding pane for ${indicator.type}`, error);
+          return;
+        }
+      }
+      if (pane) {
+        newPanes.set(indicator.id, pane);
+      }
+    });
+
+    // Remove panes for indicators that are no longer active
+    const activeIds = new Set(indicatorsNeedingPanes.map((ind) => ind.id));
+    indicatorPanesRef.current.forEach((pane, id) => {
+      if (!activeIds.has(id)) {
+        try {
+          const paneIndex = pane.paneIndex();
+          chart.removePane(paneIndex);
+        } catch (error) {
+          console.warn(`ChartContainer: Error removing pane for ${id}`, error);
+        }
+        indicatorPanesRef.current.delete(id);
+      }
+    });
+
+    setIndicatorPanes(new Map(newPanes));
+
+    // Adjust stretch factors
+    const totalPanes = 1 + indicatorsNeedingPanes.length; // 1 for price pane
+    const paneHeight = Math.floor(100 / totalPanes);
+    
+    try {
+      pricePane.setStretchFactor(Math.max(1, 100 - (paneHeight * indicatorsNeedingPanes.length)));
+      newPanes.forEach((pane) => {
+        pane.setStretchFactor(Math.max(1, paneHeight));
+      });
+    } catch (error) {
+      console.warn("ChartContainer: Error adjusting pane sizes", error);
+    }
+  }, [isChartReady, chartSettings.activeIndicators]);
 
   // Reflect width prop changes without recreating the chart
   useEffect(() => {
@@ -811,6 +881,31 @@ export function ChartContainer({
         showMA25={chartSettings.showMA25}
         showMA99={chartSettings.showMA99}
       />
+
+      {/* Dynamic Indicators */}
+      {(chartSettings.activeIndicators || []).map((indicator) => {
+        if (!indicator.visible) return null;
+        
+        const definition = INDICATOR_REGISTRY.find((d) => d.type === indicator.type);
+        const needsSeparatePane = definition?.requiresSeparatePane;
+        const pane = needsSeparatePane 
+          ? indicatorPanes.get(indicator.id) || null
+          : pricePaneRef.current;
+
+        if (needsSeparatePane && !pane) return null; // Pane not ready yet
+
+        return (
+          <DynamicIndicator
+            key={indicator.id}
+            chart={chartApi}
+            pane={pane}
+            candles={candles}
+            selectedSymbol={selectedSymbol}
+            selectedTimeframe={selectedTimeframe}
+            indicator={indicator}
+          />
+        );
+      })}
     </div>
   );
 }

@@ -3,6 +3,36 @@ export type Symbol = "BTCUSDT" | "ETHUSDT" | "SOLUSDT" | string;
 export type Direction = "long" | "short";
 export type ConfluenceType = "OB" | "SR" | "RSI" | "CVD" | "FIB" | "Trend";
 
+export type IndicatorType = 
+  | "RSI" 
+  | "MACD" 
+  | "MA" 
+  | "EMA" 
+  | "BB" 
+  | "Stochastic" 
+  | "Volume";
+
+export type IndicatorCategory = "Oscillators" | "Trend" | "Volume" | "Volatility";
+
+export interface IndicatorConfig {
+  id: string; // Unique ID for this indicator instance
+  type: IndicatorType;
+  name: string;
+  category: IndicatorCategory;
+  paneIndex?: number; // Which pane to render on (0 = main, 1+ = separate)
+  settings: Record<string, any>; // Indicator-specific settings
+  visible: boolean;
+}
+
+export interface IndicatorDefinition {
+  type: IndicatorType;
+  name: string;
+  category: IndicatorCategory;
+  description: string;
+  defaultSettings: Record<string, any>;
+  requiresSeparatePane?: boolean; // RSI, MACD need separate panes
+}
+
 export const DEFAULT_SYMBOLS: Symbol[] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
 export const DEFAULT_TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h"];
 
@@ -18,6 +48,7 @@ export interface ChartSettings {
   showMA7: boolean;
   showMA25: boolean;
   showMA99: boolean;
+  activeIndicators: IndicatorConfig[]; // Dynamic list of active indicators
 }
 
 export interface Settings {
