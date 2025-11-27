@@ -1,11 +1,14 @@
 "use client";
 
 import { memo, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { TradingSignal } from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { formatPrice, formatTimestamp, cn } from "@/lib/utils";
-import { TrendingDown, TrendingUp } from "lucide-react";
+import { TrendingDown, TrendingUp, ArrowRight } from "lucide-react";
 import type { SymbolItem } from "@/components/ui/SymbolManager";
+import { useMarketStore } from "@/stores/useMarketStore";
 
 interface SignalRowProps {
   signal: TradingSignal;
@@ -20,6 +23,8 @@ const calculatePriceScore = (currentPrice: number | null | undefined, entryPrice
 
 export const SignalRow = memo(
   ({ signal, symbols = [] }: SignalRowProps) => {
+    const router = useRouter();
+    const { setSelectedSymbol, setSelectedTimeframe, setLatestSignal } = useMarketStore();
     const directionIsLong = signal.direction === "long";
     const entryPrice = signal.entry1 ?? signal.price ?? 0;
     
@@ -70,18 +75,39 @@ export const SignalRow = memo(
       return signal.swing_low_timestamp ? formatTimestamp(signal.swing_low_timestamp) : null;
     }, [signal.swing_low_timestamp]);
 
+    const handleViewChart = async (e: React.MouseEvent) => {
+      e.stopPropagation(); // Prevent any parent click handlers
+      try {
+        // Set symbol and timeframe first
+        setSelectedSymbol(signal.symbol as any);
+        if (signal.timeframe) {
+          setSelectedTimeframe(signal.timeframe as any);
+        }
+        // Set the signal in store
+        setLatestSignal(signal);
+        // Small delay to ensure state updates propagate
+        await new Promise(resolve => setTimeout(resolve, 50));
+        // Navigate to dashboard
+        router.push("/dashboard");
+      } catch (error) {
+        console.error("Error navigating to dashboard:", error);
+      }
+    };
+
     return (
       <div
         className={cn(
-          "grid grid-cols-[200px_100px_120px_100px_100px_100px_100px_120px_120px_120px_120px] gap-4 items-center w-full border-b border-border/60 bg-card/70 px-4 py-3 transition hover:bg-card/90",
+          "grid grid-cols-[150px_100px_80px_100px_120px_100px_100px_100px_100px_120px_120px_120px_120px_100px] gap-4 items-center w-full border-b border-border/60 bg-card/70 px-4 py-3 transition hover:bg-card/90",
           directionIsLong ? "hover:border-l-2 hover:border-l-emerald-500/50" : "hover:border-l-2 hover:border-l-red-500/50"
         )}
       >
-        {/* Symbol & Direction */}
-        <div className="flex items-center gap-2">
-          <div className="font-semibold tracking-tight text-foreground">
-            {signal.symbol.replace("USDT", "/USDT")}
-          </div>
+        {/* Symbol */}
+        <div className="font-semibold tracking-tight text-foreground">
+          {signal.symbol.replace("USDT", "/USDT")}
+        </div>
+
+        {/* Direction */}
+        <div>
           <Badge variant={directionIsLong ? "long" : "short"} className="px-2 py-1 text-[11px]">
             {directionIsLong ? (
               <TrendingUp className="mr-1 h-3 w-3" />
@@ -90,9 +116,11 @@ export const SignalRow = memo(
             )}
             {signal.direction?.toUpperCase()}
           </Badge>
-          {signal.timeframe && (
-            <span className="text-xs uppercase text-muted-foreground">{signal.timeframe}</span>
-          )}
+        </div>
+
+        {/* Timeframe */}
+        <div className="text-xs uppercase text-muted-foreground">
+          {signal.timeframe || "-"}
         </div>
 
         {/* Price Score */}
@@ -111,10 +139,16 @@ export const SignalRow = memo(
           </div>
         </div>
 
+        {/* Current Price */}
+        <div className="text-right">
+          <p className="font-mono text-sm font-medium text-foreground">
+            {currentPrice ? formatPrice(currentPrice) : formatPrice(signal.price)}
+          </p>
+        </div>
+
         {/* Entry */}
         <div className="text-right">
           <p className="font-mono text-sm text-foreground">{formatPrice(entryPrice)}</p>
-          <p className="text-[10px] text-muted-foreground">Entry</p>
         </div>
 
         {/* Stop Loss */}
@@ -122,7 +156,6 @@ export const SignalRow = memo(
           {stopLoss !== null ? (
             <>
               <p className="font-mono text-sm text-red-400">{formatPrice(stopLoss)}</p>
-              <p className="text-[10px] text-muted-foreground">SL</p>
             </>
           ) : (
             <span className="text-muted-foreground text-xs">-</span>
@@ -134,7 +167,6 @@ export const SignalRow = memo(
           {signal.tp1 ? (
             <>
               <p className="font-mono text-sm text-foreground">{formatPrice(signal.tp1)}</p>
-              <p className="text-[10px] text-muted-foreground">TP1</p>
             </>
           ) : (
             <span className="text-muted-foreground text-xs">-</span>
@@ -146,7 +178,6 @@ export const SignalRow = memo(
           {signal.tp2 ? (
             <>
               <p className="font-mono text-sm text-foreground">{formatPrice(signal.tp2)}</p>
-              <p className="text-[10px] text-muted-foreground">TP2</p>
             </>
           ) : (
             <span className="text-muted-foreground text-xs">-</span>
@@ -158,7 +189,6 @@ export const SignalRow = memo(
           {signal.tp3 ? (
             <>
               <p className="font-mono text-sm text-foreground">{formatPrice(signal.tp3)}</p>
-              <p className="text-[10px] text-muted-foreground">TP3</p>
             </>
           ) : (
             <span className="text-muted-foreground text-xs">-</span>
@@ -170,7 +200,6 @@ export const SignalRow = memo(
           {swingHigh !== null ? (
             <>
               <p className="font-mono text-sm text-emerald-400">{formatPrice(swingHigh)}</p>
-              <p className="text-[10px] text-muted-foreground">Swing High</p>
               {swingHighTimestamp && (
                 <p className="text-[9px] text-muted-foreground">{swingHighTimestamp}</p>
               )}
@@ -185,7 +214,6 @@ export const SignalRow = memo(
           {swingLow !== null ? (
             <>
               <p className="font-mono text-sm text-red-400">{formatPrice(swingLow)}</p>
-              <p className="text-[10px] text-muted-foreground">Swing Low</p>
               {swingLowTimestamp && (
                 <p className="text-[9px] text-muted-foreground">{swingLowTimestamp}</p>
               )}
@@ -195,17 +223,21 @@ export const SignalRow = memo(
           )}
         </div>
 
-        {/* Current Price */}
-        <div className="text-right">
-          <p className="font-mono text-sm font-medium text-foreground">
-            {currentPrice ? formatPrice(currentPrice) : formatPrice(signal.price)}
-          </p>
-          <p className="text-[10px] text-muted-foreground">Current</p>
-        </div>
-
         {/* Timestamp */}
         <div className="text-right">
           <p className="text-xs text-muted-foreground">{lastUpdated}</p>
+        </div>
+
+        {/* Action Button */}
+        <div className="flex justify-end">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleViewChart}
+            className="h-8 px-3"
+          >
+            <ArrowRight className="h-4 w-4" />
+          </Button>
         </div>
       </div>
     );
