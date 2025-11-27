@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatTimestamp } from "@/lib/utils";
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import { memo } from "react";
 
 interface ChartHeaderProps {
   symbol: string;
@@ -17,7 +18,7 @@ interface ChartHeaderProps {
   onNextSignal: () => void;
 }
 
-export function ChartHeader({
+function ChartHeaderComponent({
   symbol,
   timeframe,
   signal,
@@ -77,4 +78,6 @@ export function ChartHeader({
     </div>
   );
 }
+
+export const ChartHeader = memo(ChartHeaderComponent);
 

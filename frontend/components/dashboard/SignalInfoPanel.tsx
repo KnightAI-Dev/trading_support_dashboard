@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { formatPrice } from "@/lib/utils";
 import { TrendingUp, TrendingDown } from "lucide-react";
+import { memo } from "react";
 
 interface SignalInfoPanelProps {
   signal: TradingSignal | null;
@@ -17,7 +18,7 @@ interface SignalInfoPanelProps {
   totalSignals: number;
 }
 
-export function SignalInfoPanel({
+function SignalInfoPanelComponent({
   signal,
   currentPrice,
   entryPrice,
@@ -146,4 +147,6 @@ export function SignalInfoPanel({
     </div>
   );
 }
+
+export const SignalInfoPanel = memo(SignalInfoPanelComponent);
 

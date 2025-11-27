@@ -20,6 +20,7 @@ import { EntrySlTpLines } from "./EntrySlTpLines";
 import { RSIIndicator } from "./RSIIndicator";
 import { CandleTooltip } from "./CandleTooltip";
 import { MovingAverages } from "./MovingAverages";
+import { Loader2 } from "lucide-react";
 
 interface ChartContainerProps {
   width?: number;
@@ -64,10 +65,17 @@ export function ChartContainer({
         : container.clientWidth > 0
         ? container.clientWidth
         : 800;
+    
+    const resolvedHeight =
+      typeof height === "number"
+        ? height
+        : container.clientHeight > 0
+        ? container.clientHeight
+        : 600;
 
     const chart = createChart(container, {
       width: Math.floor(resolvedWidth),
-      height,
+      height: resolvedHeight,
       layout: {
         background: { type: ColorType.Solid, color: "#0a0e13" },
         textColor: "#d1d5db",
@@ -135,6 +143,18 @@ export function ChartContainer({
       }
     };
 
+    const updateHeight = (nextHeight?: number) => {
+      if (!chartRef.current || chartRef.current !== chart) return;
+      if (typeof nextHeight !== "number" || nextHeight <= 0 || Number.isNaN(nextHeight)) {
+        return;
+      }
+      try {
+        chart.applyOptions({ height: Math.floor(nextHeight) });
+      } catch (error) {
+        console.warn("ChartContainer: Error resizing chart height", error);
+      }
+    };
+
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver((entries) => {
@@ -142,12 +162,20 @@ export function ChartContainer({
         const entry = entries[0];
         if (!entry) return;
         updateWidth(entry.contentRect.width);
+        // Update height if it's dynamic (not explicitly set)
+        if (typeof height !== "number") {
+          updateHeight(entry.contentRect.height);
+        }
       });
       resizeObserver.observe(container);
     } else {
       const handleResize = () => {
         if (widthOverrideRef.current !== undefined) return;
         updateWidth(container.clientWidth);
+        // Update height if it's dynamic (not explicitly set)
+        if (typeof height !== "number") {
+          updateHeight(container.clientHeight);
+        }
       };
       windowResizeHandlerRef.current = handleResize;
       window.addEventListener("resize", handleResize);
@@ -647,9 +675,24 @@ export function ChartContainer({
   const chartApi = isChartReady ? chartRef.current : null;
   const priceSeries = isChartReady ? seriesRef.current : null;
 
+  // Calculate height for container
+  const containerHeight = typeof height === "number" ? height : "100%";
+
   return (
     <div className="relative w-full h-full">
-      <div ref={chartContainerRef} className="w-full" style={{ height: `${height}px` }} />
+      {!isChartReady && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 backdrop-blur-sm z-10">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="h-6 w-6 text-primary animate-spin" />
+            <p className="text-sm text-muted-foreground">Loading chart...</p>
+          </div>
+        </div>
+      )}
+      <div 
+        ref={chartContainerRef} 
+        className="w-full h-full" 
+        style={typeof height === "number" ? { height: `${height}px` } : { height: "100%" }}
+      />
       
       {/* Show Swing High/Low markers based on chart settings */}
       {chartSettings.showSwings && (
