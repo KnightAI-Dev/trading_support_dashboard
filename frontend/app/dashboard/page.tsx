@@ -1,6 +1,4 @@
 "use client";
-
-import { Suspense } from "react";
 import { useMarketStore } from "@/stores/useMarketStore";
 import { useSymbolData } from "@/hooks/useSymbolData";
 import { ChartContainer } from "@/components/chart/ChartContainer";
@@ -139,9 +137,7 @@ function DashboardContent() {
 export default function DashboardPage() {
   return (
     <ErrorBoundary>
-      <Suspense fallback={<DashboardSkeleton />}>
-        <DashboardContent />
-      </Suspense>
+      <DashboardContent />
     </ErrorBoundary>
   );
 }

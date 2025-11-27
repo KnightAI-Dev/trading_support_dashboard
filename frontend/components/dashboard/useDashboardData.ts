@@ -145,7 +145,26 @@ export function useDashboardData() {
 
       setSwingPoints(uniqueSwingPoints);
 
-      if (alerts.length > 0) {
+      // Only set signal from swing points if there's no preset signal
+      // Check for presetSignal in sessionStorage first
+      let hasPresetSignal = false;
+      try {
+        const stored = sessionStorage.getItem('presetSignal');
+        if (stored) {
+          hasPresetSignal = true;
+        }
+      } catch (e) {
+        // Ignore
+      }
+
+      // Also check if latestSignal was already set (from navigation)
+      const currentLatestSignal = useMarketStore.getState().latestSignal;
+      const hasExistingSignal = currentLatestSignal && 
+        currentLatestSignal.symbol === selectedSymbol && 
+        currentLatestSignal.timeframe === selectedTimeframe;
+
+      // Only overwrite if there's no preset signal and no existing signal
+      if (!hasPresetSignal && !hasExistingSignal && alerts.length > 0) {
         const sortedAlerts = [...alerts].sort(
           (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
         );
@@ -192,6 +211,27 @@ export function useDashboardData() {
     
     const loadSignals = async () => {
       setIsLoadingSignals(true);
+      
+      // Check for presetSignal FIRST, before fetching
+      let presetSignal: TradingSignal | null = null;
+      try {
+        const stored = sessionStorage.getItem('presetSignal');
+        if (stored) {
+          presetSignal = JSON.parse(stored);
+          // Don't remove it yet - we'll remove it after we've processed it
+        }
+      } catch (e) {
+        console.warn("Failed to parse preset signal:", e);
+      }
+
+      // If we have a preset signal, set it immediately to preserve it
+      if (presetSignal && 
+          presetSignal.symbol === selectedSymbol && 
+          presetSignal.timeframe === selectedTimeframe) {
+        // Set it immediately so it doesn't get overwritten
+        setLatestSignal(presetSignal);
+      }
+
       try {
         const signals = await fetchSignals({
           symbol: selectedSymbol,
@@ -206,16 +246,7 @@ export function useDashboardData() {
 
         setAllSignals(filteredSignals);
 
-        let presetSignal: TradingSignal | null = null;
-        try {
-          const stored = sessionStorage.getItem('presetSignal');
-          if (stored) {
-            presetSignal = JSON.parse(stored);
-            sessionStorage.removeItem('presetSignal');
-          }
-        } catch (e) {
-          console.warn("Failed to parse preset signal:", e);
-        }
+        // Now process the presetSignal with the fetched signals
 
         if (!presetSignal) {
           const currentLatestSignal = useMarketStore.getState().latestSignal;
@@ -244,12 +275,16 @@ export function useDashboardData() {
             setCurrentSignalIndex(presetIndex);
             setLatestSignal(filteredSignals[presetIndex]);
           } else if (filteredSignals.length > 0) {
+            // Signal not in list, but keep it and set index to 0
             setCurrentSignalIndex(0);
             setLatestSignal(presetSignal);
           } else {
             setCurrentSignalIndex(0);
             setLatestSignal(presetSignal || null);
           }
+          
+          // Remove from sessionStorage after processing
+          sessionStorage.removeItem('presetSignal');
         } else if (filteredSignals.length > 0) {
           setCurrentSignalIndex(0);
           setLatestSignal(filteredSignals[0]);
