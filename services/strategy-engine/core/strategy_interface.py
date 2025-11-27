@@ -12,7 +12,12 @@ from typing import List, Dict, Tuple, Optional
 import pandas as pd
 
 from config.settings import StrategyConfig
-from indicators.swing_points import calculate_swing_points, filter_between
+from indicators.swing_points import (
+    calculate_swing_points,
+    filter_between, 
+    enforce_strict_alternation,
+    filter_rate
+)
 from indicators.support_resistance import get_support_resistance_levels
 from indicators.fibonacci import calculate_fibonacci_levels
 from core.confluence import ConfluenceAnalyzer
@@ -65,13 +70,14 @@ class StrategyInterface:
         self, 
         timeframe_ticker_df: pd.DataFrame, 
         swing_high_low_candle_counts: int, 
+        swing_pruning_rate: float
     ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
         """
-        Calculate and filter swing highs and lows from candle data.
+        Calculate and filter swing highs and lows from the latest N candles in the dataframe.
         
         Args:
             timeframe_ticker_df: DataFrame with OHLC data (should have 'unix' column for datetime)
-            swing_high_low_candle_counts: Minimum number of candles required
+            swing_high_low_candle_counts: Number of latest candles to use (default: 200)
             
         Returns:
             Tuple of (swing_highs_list, swing_lows_list) where each list contains (datetime, price) tuples
@@ -80,16 +86,58 @@ class StrategyInterface:
             return [], []
         
         try:
-            # timeframe_ticker_df = timeframe_ticker_df[-swing_high_low_candle_counts:]
+            # Use only the latest N candles for swing point calculation
+            # This ensures we're working with recent data and improves performance
+            latest_candles_df = timeframe_ticker_df.tail(swing_high_low_candle_counts).copy()
+            
+            # Use calculate_swing_points to identify swing highs and lows
+            # This function uses a rolling window approach to detect local maxima (highs) and minima (lows)
             swing_high_list, swing_low_list = calculate_swing_points(
-                timeframe_ticker_df, 
-                window=self.config.swing_window
+                latest_candles_df,
+                window=self.config.swing_window  # Number of bars to look back and forward for comparison
             )
 
-            filtered_swing_lows = filter_between(swing_high_list, swing_low_list, keep="min")
-            filtered_swing_highs = filter_between(swing_low_list, swing_high_list, keep="max")
+            # Step 1: Enforce strict alternation to remove consecutive same-type points
+            # This ensures proper high-low-high-low pattern by keeping only the more extreme one
+            # This removes duplicate swing highs/lows that appear consecutively
+            final_swing_highs_clean, final_swing_lows_clean = enforce_strict_alternation(
+                swing_high_list, 
+                swing_low_list
+            )
+
+            # Step 2: Filter between swing highs to ensure one lowest swing low between each pair
+            # Requirement: between two swing highs, there must be one lowest swing low
+            # filter_between finds lows between consecutive highs and keeps only the lowest one in each interval
+            filtered_swing_lows = filter_between(
+                final_swing_highs_clean,  # Use cleaned highs as boundaries
+                final_swing_lows_clean,   # Filter from cleaned lows
+                keep="min"                 # Keep the minimum (lowest) low in each interval
+            )
             
-            return filtered_swing_highs, filtered_swing_lows
+            # Step 3: Filter between swing lows to ensure one highest swing high between each pair
+            # Requirement: between two swing lows, there must be one highest swing high
+            # filter_between finds highs between consecutive lows and keeps only the highest one in each interval
+            filtered_swing_highs = filter_between(
+                final_swing_lows_clean,   # Use cleaned lows as boundaries
+                final_swing_highs_clean,   # Filter from cleaned highs
+                keep="max"                 # Keep the maximum (highest) high in each interval
+            )
+
+            swing_high_list, swing_low_list = filter_rate(
+                filtered_swing_highs,
+                filtered_swing_lows,
+                rate=swing_pruning_rate
+            )
+            # Step 5: Final alternation check after filtering
+            # This ensures the filtered results still maintain strict alternation
+            # and removes any remaining consecutive same-type points that might have been created
+            final_swing_highs_final, final_swing_lows_final = enforce_strict_alternation(
+                swing_high_list,
+                swing_low_list
+            )
+
+            
+            return final_swing_highs_final, final_swing_lows_final
         except Exception as e:
             # Return empty lists on any error
             return [], []
@@ -156,10 +204,12 @@ class StrategyInterface:
         # Step 2: Get swing highs and lows
         # Get swing highs and lows for available timeframes
         swing_highs_4h, swing_lows_4h = [], []
+        swing_pruning_rate = self.config.get_pruning_score(asset_symbol=asset_symbol)
         if has_4h:
             swing_highs_4h, swing_lows_4h = self.get_swingHL(
                 candles_4h_df, 
                 self.config.candle_counts_for_swing_high_low,
+                swing_pruning_rate=swing_pruning_rate
             )
             if swing_highs_4h is None:
                 swing_highs_4h = []
@@ -171,6 +221,7 @@ class StrategyInterface:
             swing_highs_30m, swing_lows_30m = self.get_swingHL(
                 candles_30m_df,
                 self.config.candle_counts_for_swing_high_low,
+                swing_pruning_rate=swing_pruning_rate
             )
             if swing_highs_30m is None:
                 swing_highs_30m = []

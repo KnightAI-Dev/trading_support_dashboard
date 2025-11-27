@@ -150,7 +150,7 @@ class AlertGenerator:
                         bullish_rate_decimal = None
             
             # Generate bullish alert only if rate meets the pruning threshold (using Decimal comparison)
-            if bullish_rate_decimal is not None and bullish_rate_decimal >= swing_pruning_rate_decimal:
+            if bullish_rate_decimal is not None:
                 alerts.append({
                     "timeframe": level.timeframe or "unknown",
                     "trend_type": "long",
@@ -181,7 +181,7 @@ class AlertGenerator:
                         bearish_rate_decimal = None
             
             # Generate bearish alert only if rate meets the pruning threshold (using Decimal comparison)
-            if bearish_rate_decimal is not None and bearish_rate_decimal >= swing_pruning_rate_decimal:
+            if bearish_rate_decimal is not None:
                 alerts.append({
                     "timeframe": level.timeframe or "unknown",
                     "trend_type": "short",
