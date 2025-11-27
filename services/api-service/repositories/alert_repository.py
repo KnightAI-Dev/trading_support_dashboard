@@ -19,28 +19,31 @@ class AlertRepository(BaseRepository):
         limit: int = 100
     ) -> List[Dict]:
         """Find alerts with optional filters"""
+        # Use CTE with window function to limit each symbol to max 50 signals
         base_query = """
-            SELECT 
-                sa.id,
-                s.symbol_name as symbol,
-                t.tf_name as timeframe,
-                sa.timestamp,
-                sa.entry_price,
-                sa.stop_loss,
-                sa.take_profit_1,
-                sa.take_profit_2,
-                sa.take_profit_3,
-                sa.risk_score,
-                sa.swing_low_price,
-                sa.swing_low_timestamp,
-                sa.swing_high_price,
-                sa.swing_high_timestamp,
-                sa.direction,
-                sa.created_at
-            FROM strategy_alerts sa
-            INNER JOIN symbols s ON sa.symbol_id = s.symbol_id
-            INNER JOIN timeframe t ON sa.timeframe_id = t.timeframe_id
-            WHERE s.is_active = TRUE AND s.removed_at IS NULL
+            WITH ranked_alerts AS (
+                SELECT 
+                    sa.id,
+                    s.symbol_name as symbol,
+                    t.tf_name as timeframe,
+                    sa.timestamp,
+                    sa.entry_price,
+                    sa.stop_loss,
+                    sa.take_profit_1,
+                    sa.take_profit_2,
+                    sa.take_profit_3,
+                    sa.risk_score,
+                    sa.swing_low_price,
+                    sa.swing_low_timestamp,
+                    sa.swing_high_price,
+                    sa.swing_high_timestamp,
+                    sa.direction,
+                    sa.created_at,
+                    ROW_NUMBER() OVER (PARTITION BY s.symbol_name ORDER BY sa.created_at DESC) as rn
+                FROM strategy_alerts sa
+                INNER JOIN symbols s ON sa.symbol_id = s.symbol_id
+                INNER JOIN timeframe t ON sa.timeframe_id = t.timeframe_id
+                WHERE s.is_active = TRUE AND s.removed_at IS NULL
         """
         
         params = {}
@@ -57,7 +60,19 @@ class AlertRepository(BaseRepository):
             base_query += " AND sa.direction = :direction"
             params["direction"] = direction
         
-        base_query += " ORDER BY sa.timestamp DESC LIMIT :limit"
+        # Filter to max 50 per symbol, then apply overall limit
+        base_query += """
+            )
+            SELECT 
+                id, symbol, timeframe, timestamp, entry_price, stop_loss,
+                take_profit_1, take_profit_2, take_profit_3, risk_score,
+                swing_low_price, swing_low_timestamp, swing_high_price,
+                swing_high_timestamp, direction, created_at
+            FROM ranked_alerts
+            WHERE rn <= 50
+            ORDER BY created_at DESC
+            LIMIT :limit
+        """
         params["limit"] = limit
         
         rows = self.execute_query(base_query, params)

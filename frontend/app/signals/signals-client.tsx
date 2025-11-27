@@ -14,10 +14,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ArrowLeft, Filter, Search } from "lucide-react";
+import { ArrowLeft, Filter, Search, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { SignalList } from "@/components/signals/SignalList";
 import { useSignalsStore } from "@/stores/useSignalsStore";
 import { useSignalFeed } from "@/hooks/useSignalFeed";
+import { useSymbolData } from "@/hooks/useSymbolData";
 import { cn } from "@/lib/utils";
 
 interface SignalsClientProps {
@@ -38,36 +39,99 @@ const formatRelative = (timestamp: number | null) => {
   if (diffSeconds < 60) return `${diffSeconds}s ago`;
   const diffMinutes = Math.floor(diffSeconds / 60);
   if (diffMinutes < 60) return `${diffMinutes}m ago`;
-  const diffHours = Math.floor(diffMinutes / 60);
+  const diffHours = Math.floor(diffMinutes / 60); 
   return `${diffHours}h ago`;
+};
+
+type SortField = "name" | "price" | "score";
+type SortDirection = "asc" | "desc";
+
+const calculatePriceScore = (currentPrice: number | null | undefined, entryPrice: number): number => {
+  if (!currentPrice || currentPrice <= 0 || entryPrice <= 0) return Infinity; // Put missing prices at end
+  return Math.abs(currentPrice - entryPrice) / currentPrice * 100;
 };
 
 export function SignalsClient({ initialSignals }: SignalsClientProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [directionFilter, setDirectionFilter] = useState<"all" | "long" | "short">("all");
-  const [minScore, setMinScore] = useState<number>(0);
+  const [minPrice, setMinPrice] = useState<number>(0);
+  const [maxPrice, setMaxPrice] = useState<number>(0);
+  const [sortField, setSortField] = useState<SortField>("score");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
   const setInitialSignals = useSignalsStore((state) => state.setInitialSignals);
   const signalIds = useSignalsStore((state) => state.signalIds);
   const revision = useSignalsStore((state) => state.revision);
   const { status, lastMessageAt } = useSignalFeed();
+  const { symbols } = useSymbolData();
 
   useEffect(() => {
     setInitialSignals(initialSignals ?? []);
   }, [initialSignals, setInitialSignals]);
 
-  const filteredIds = useMemo(() => {
+  const filteredAndSortedIds = useMemo(() => {
     const lookup = useSignalsStore.getState().signalMap;
     const query = searchTerm.trim().toLowerCase();
 
-    return signalIds.filter((id) => {
+    // Filter signals
+    const filtered = signalIds.filter((id) => {
       const signal = lookup[id];
       if (!signal) return false;
       if (query && !signal.symbol.toLowerCase().includes(query)) return false;
       if (directionFilter !== "all" && signal.direction !== directionFilter) return false;
-      if (minScore > 0 && (signal.market_score ?? 0) < minScore) return false;
+      
+      // Filter by current price range
+      const currentPrice = symbols.find((s) => s.symbol === signal.symbol)?.price ?? signal.price ?? 0;
+      if (minPrice > 0 && currentPrice < minPrice) return false;
+      if (maxPrice > 0 && currentPrice > maxPrice) return false;
+      
       return true;
     });
-  }, [signalIds, searchTerm, directionFilter, minScore, revision]);
+
+    // Sort signals
+    const sorted = [...filtered].sort((aId, bId) => {
+      const a = lookup[aId];
+      const b = lookup[bId];
+      if (!a || !b) return 0;
+
+      let aValue: number | string;
+      let bValue: number | string;
+
+      switch (sortField) {
+        case "name":
+          aValue = a.symbol.toLowerCase();
+          bValue = b.symbol.toLowerCase();
+          break;
+        case "price": {
+          const aPrice = symbols.find((s) => s.symbol === a.symbol)?.price ?? a.price ?? 0;
+          const bPrice = symbols.find((s) => s.symbol === b.symbol)?.price ?? b.price ?? 0;
+          aValue = aPrice;
+          bValue = bPrice;
+          break;
+        }
+        case "score": {
+          const aEntryPrice = a.entry1 ?? a.price ?? 0;
+          const bEntryPrice = b.entry1 ?? b.price ?? 0;
+          const aCurrentPrice = symbols.find((s) => s.symbol === a.symbol)?.price ?? null;
+          const bCurrentPrice = symbols.find((s) => s.symbol === b.symbol)?.price ?? null;
+          aValue = calculatePriceScore(aCurrentPrice, aEntryPrice);
+          bValue = calculatePriceScore(bCurrentPrice, bEntryPrice);
+          break;
+        }
+        default:
+          return 0;
+      }
+
+      if (typeof aValue === "string" && typeof bValue === "string") {
+        const comparison = aValue.localeCompare(bValue);
+        return sortDirection === "asc" ? comparison : -comparison;
+      }
+
+      const comparison = (aValue as number) - (bValue as number);
+      return sortDirection === "asc" ? comparison : -comparison;
+    });
+
+    return sorted;
+  }, [signalIds, searchTerm, directionFilter, minPrice, maxPrice, revision, sortField, sortDirection, symbols]);
 
   const totalSignals = signalIds.length;
 
@@ -85,7 +149,7 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
             <div>
               <h1 className="text-2xl font-bold text-foreground">Real-time Signals</h1>
               <p className="text-sm text-muted-foreground">
-                Rendering {filteredIds.length} / {totalSignals} signals
+                Rendering {filteredAndSortedIds.length} / {totalSignals} signals
               </p>
             </div>
           </div>
@@ -139,21 +203,86 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
             </div>
 
             <div className="flex items-center gap-2">
-              <Label htmlFor="min-score">Min Score</Label>
+              <Label htmlFor="min-price" className="text-sm">Min Price</Label>
               <Input
-                id="min-score"
+                id="min-price"
                 type="number"
                 min={0}
-                max={100}
-                value={minScore}
-                onChange={(event) => setMinScore(Number(event.target.value) || 0)}
-                className="w-[100px]"
+                step="0.01"
+                placeholder="0"
+                value={minPrice || ""}
+                onChange={(event) => setMinPrice(Number(event.target.value) || 0)}
+                className="w-[120px]"
               />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label htmlFor="max-price" className="text-sm">Max Price</Label>
+              <Input
+                id="max-price"
+                type="number"
+                min={0}
+                step="0.01"
+                placeholder="0"
+                value={maxPrice || ""}
+                onChange={(event) => setMaxPrice(Number(event.target.value) || 0)}
+                className="w-[120px]"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-sm">Sort by</Label>
+              <Select
+                value={sortField}
+                onValueChange={(value) => setSortField(value as SortField)}
+              >
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="score">Price Score</SelectItem>
+                  <SelectItem value="price">Current Price</SelectItem>
+                  <SelectItem value="name">Symbol Name</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-sm">Order</Label>
+              <Select
+                value={sortDirection}
+                onValueChange={(value) => setSortDirection(value as SortDirection)}
+              >
+                <SelectTrigger className="w-[100px]">
+                  <div className="flex items-center gap-2">
+                    <SelectValue />
+                    {/* {sortDirection === "asc" ? (
+                      <ArrowUp className="h-3 w-3" />
+                    ) : (
+                      <ArrowDown className="h-3 w-3" />
+                    )} */}
+                  </div>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="asc">
+                    <div className="flex items-center gap-2">
+                      <ArrowUp className="h-3 w-3" />
+                      <span>Ascending</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="desc">
+                    <div className="flex items-center gap-2">
+                      <ArrowDown className="h-3 w-3" />
+                      <span>Descending</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
         </Card>
 
-        <SignalList signalIds={filteredIds} />
+        <SignalList signalIds={filteredAndSortedIds} symbols={symbols} />
       </div>
     </div>
   );

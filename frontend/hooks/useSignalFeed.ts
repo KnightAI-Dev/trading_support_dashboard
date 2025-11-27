@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { TradingSignal } from "@/lib/api";
 import { useSignalsStore } from "@/stores/useSignalsStore";
+import { notifySymbolUpdate } from "@/hooks/useSymbolData";
+import type { SymbolItem } from "@/components/ui/SymbolManager";
 
 const getSignalsWsUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_SIGNALS_WS_URL || "ws://localhost:8000/ws";
@@ -137,6 +139,16 @@ export function useSignalFeed() {
         if (isUnmountedRef.current) return;
         try {
           const parsed = JSON.parse(event.data);
+          
+          // Handle symbol_update messages (for price updates)
+          if (parsed.type === "symbol_update" && parsed.data) {
+            console.log("symbol_update");
+            notifySymbolUpdate(parsed.data as Partial<SymbolItem>);
+            setLastMessageAt(Date.now());
+            return;
+          }
+          
+          // Handle TradingSignal messages
           const signals = normalizeSignalPayload(parsed);
           if (signals.length) {
             queueRef.current.push(...signals);

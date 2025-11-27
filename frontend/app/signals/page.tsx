@@ -23,7 +23,7 @@ function SignalsSkeleton() {
 }
 
 export default async function SignalsPage({ searchParams }: SignalsPageProps) {
-  const limit = parseInt(searchParams.limit || "1000", 10);
+  const limit = parseInt(searchParams.limit || "5000", 10);
 
   // Server-side fetch with caching
   const signals = await fetchSignals(

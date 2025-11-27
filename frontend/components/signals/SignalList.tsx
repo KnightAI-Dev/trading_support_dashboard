@@ -5,9 +5,11 @@ import { List, type RowComponentProps } from "react-window";
 import { Card } from "@/components/ui/card";
 import { useSignalsStore } from "@/stores/useSignalsStore";
 import { SignalRow } from "./SignalRow";
+import type { SymbolItem } from "@/components/ui/SymbolManager";
 
 interface SignalListProps {
   signalIds: string[];
+  symbols?: SymbolItem[];
   rowHeight?: number;
   overscanCount?: number;
 }
@@ -16,6 +18,7 @@ interface VirtualizedRowProps extends RowComponentProps<SignalListRowProps> {}
 
 interface SignalListRowProps {
   ids: string[];
+  symbols: SymbolItem[];
 }
 
 const DEFAULT_ROW_HEIGHT = 80;
@@ -26,10 +29,11 @@ const rowsAreEqual = (prev: VirtualizedRowProps, next: VirtualizedRowProps) =>
   prev.index === next.index &&
   prev.style === next.style &&
   prev.ids === next.ids &&
+  prev.symbols === next.symbols &&
   prev["ariaAttributes"] === next["ariaAttributes"];
 
 const VirtualizedRow = memo(
-  ({ index, style, ids, ariaAttributes }: VirtualizedRowProps) => {
+  ({ index, style, ids, symbols, ariaAttributes }: VirtualizedRowProps) => {
     const signalId = ids[index];
     const signal = useSignalsStore((state) => state.signalMap[signalId]);
 
@@ -39,7 +43,7 @@ const VirtualizedRow = memo(
 
     return (
       <div {...ariaAttributes} style={style} className="px-1">
-        <SignalRow signal={signal} />
+        <SignalRow signal={signal} symbols={symbols} />
       </div>
     );
   },
@@ -48,8 +52,27 @@ const VirtualizedRow = memo(
 
 VirtualizedRow.displayName = "VirtualizedRow";
 
+function SignalTableHeader() {
+  return (
+    <div className="grid grid-cols-[200px_100px_120px_100px_100px_100px_100px_120px_120px_120px_120px] gap-4 items-center w-full border-b-2 border-border bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground uppercase sticky top-0 z-10">
+      <div>Symbol</div>
+      <div className="text-center">Score</div>
+      <div className="text-right">Entry</div>
+      <div className="text-right">SL</div>
+      <div className="text-right">TP1</div>
+      <div className="text-right">TP2</div>
+      <div className="text-right">TP3</div>
+      <div className="text-right">Swing High</div>
+      <div className="text-right">Swing Low</div>
+      <div className="text-right">Current</div>
+      <div className="text-right">Updated</div>
+    </div>
+  );
+}
+
 export function SignalList({
   signalIds,
+  symbols = [],
   rowHeight = DEFAULT_ROW_HEIGHT,
   overscanCount = 20,
 }: SignalListProps) {
@@ -96,8 +119,9 @@ export function SignalList({
   const rowProps = useMemo<SignalListRowProps>(
     () => ({
       ids: signalIds,
+      symbols,
     }),
-    [signalIds]
+    [signalIds, symbols]
   );
 
   if (!mounted) {
@@ -114,21 +138,27 @@ export function SignalList({
 
   const computedWidth = Math.max(containerWidth, 320);
 
+  const headerHeight = 48;
+  const availableHeight = listHeight - headerHeight;
+
   return (
     <div
       ref={containerRef}
-      className="w-full flex-1"
+      className="w-full flex-1 flex flex-col"
       style={{ height: listHeight, minHeight: MIN_LIST_HEIGHT }}
     >
-      <List
-        defaultHeight={listHeight}
-        style={{ height: listHeight, width: computedWidth }}
-        rowCount={signalIds.length}
-        rowHeight={rowHeight}
-        rowProps={rowProps}
-        rowComponent={VirtualizedRow}
-        overscanCount={overscanCount}
-      />
+      <SignalTableHeader />
+      <div className="flex-1 overflow-hidden" style={{ height: availableHeight }}>
+        <List
+          defaultHeight={availableHeight}
+          style={{ height: availableHeight, width: computedWidth }}
+          rowCount={signalIds.length}
+          rowHeight={rowHeight}
+          rowProps={rowProps}
+          rowComponent={VirtualizedRow}
+          overscanCount={overscanCount}
+        />
+      </div>
     </div>
   );
 }

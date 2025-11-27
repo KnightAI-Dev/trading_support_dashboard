@@ -479,7 +479,7 @@ async def get_alerts(
     symbol: Optional[str] = Query(None),
     timeframe: Optional[str] = Query(None),
     direction: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=5000),
     alert_service: AlertService = Depends(get_alert_service_from_db)
 ):
     """Get strategy alerts"""
@@ -510,7 +510,7 @@ async def get_latest_alert(
 async def get_alerts_for_swings(
     symbol: str,
     timeframe: str = Query(..., description="Timeframe (required)"),
-    limit: int = Query(100, ge=1, le=1000, description="Limit results"),
+    limit: int = Query(100, ge=1, le=5000, description="Limit results"),
     alert_service: AlertService = Depends(get_alert_service_from_db)
 ):
     """Get strategy alerts for a specific symbol and timeframe to extract swing points from database"""
@@ -551,7 +551,7 @@ async def get_trading_signals(
     symbol: Optional[str] = Query(None),
     timeframe: Optional[str] = Query(None),
     direction: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
+    limit: int = Query(100, ge=1, le=5000),
     alert_service: AlertService = Depends(get_alert_service_from_db)
 ):
     """Get trading signals in frontend-ready format"""
