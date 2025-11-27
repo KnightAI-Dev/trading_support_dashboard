@@ -2,13 +2,15 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import {
-  createChart,
+  CandlestickSeries,
+  ColorType,
+  HistogramSeries,
   IChartApi,
   ISeriesApi,
   Time,
   CandlestickData,
   HistogramData,
-  ColorType,
+  createChart,
 } from "lightweight-charts";
 import { useMarketStore } from "@/stores/useMarketStore";
 import { Candle, fetchCandles } from "@/lib/api";
@@ -97,7 +99,7 @@ export function ChartContainer({
       },
     });
 
-    const candlestickSeries = chart.addCandlestickSeries({
+    const candlestickSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#10b981",
       downColor: "#ef4444",
       borderVisible: false,
@@ -106,7 +108,7 @@ export function ChartContainer({
     });
 
     // Add volume histogram series below candlesticks
-    const volumeSeries = chart.addHistogramSeries({
+    const volumeSeries = chart.addSeries(HistogramSeries, {
       color: "#26a69a",
       priceFormat: {
         type: "volume",
@@ -753,4 +755,5 @@ export function ChartContainer({
     </div>
   );
 }
+
 

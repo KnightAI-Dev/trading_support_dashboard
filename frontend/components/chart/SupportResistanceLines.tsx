@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { IChartApi, ISeriesApi, Time } from "lightweight-charts";
+import {
+  IChartApi,
+  ISeriesApi,
+  LineSeries,
+  LineStyle,
+  Time,
+} from "lightweight-charts";
 import { SRLevel } from "@/lib/api";
 
 interface SupportResistanceLinesProps {
@@ -39,10 +45,10 @@ export function SupportResistanceLines({
       const color = level.type === "support" ? "#10b981" : "#ef4444";
       const opacity = Math.min(level.strength / 10, 1);
       
-      const lineSeries = chart.addLineSeries({
+      const lineSeries = chart.addSeries(LineSeries, {
         color: `${color}${Math.floor(opacity * 255).toString(16).padStart(2, '0')}`,
         lineWidth: level.type === "support" ? 2 : 1,
-        lineStyle: level.touches >= 3 ? 0 : 2, // Solid for strong levels, dashed for weak
+        lineStyle: level.touches >= 3 ? LineStyle.Solid : LineStyle.LargeDashed,
       });
 
       lineSeries.setData([

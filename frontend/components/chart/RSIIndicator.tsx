@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { IChartApi, ISeriesApi, Time, LineData } from "lightweight-charts";
+import {
+  IChartApi,
+  ISeriesApi,
+  LineData,
+  LineSeries,
+  Time,
+} from "lightweight-charts";
 import { Candle } from "@/lib/api";
 
 interface RSIIndicatorProps {
@@ -128,9 +134,6 @@ export function RSIIndicator({
     }
 
     try {
-      // Check if chart is still valid
-      if (!chart.addLineSeries) return;
-
       // Remove existing RSI series if it exists
       if (rsiSeriesRef.current) {
         try {
@@ -141,7 +144,7 @@ export function RSIIndicator({
       }
 
       // Create new RSI series
-      const rsiSeries = chart.addLineSeries({
+      const rsiSeries = chart.addSeries(LineSeries, {
         color: "#8b5cf6", // Purple color for RSI
         lineWidth: 2,
         priceScaleId: "rsi", // Use separate price scale

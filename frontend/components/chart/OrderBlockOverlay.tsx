@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect } from "react";
-import { IChartApi, Time } from "lightweight-charts";
+import {
+  AreaSeries,
+  IChartApi,
+  ISeriesApi,
+  LineSeries,
+  Time,
+} from "lightweight-charts";
 import { TradingSignal, Candle } from "@/lib/api";
 
 interface OrderBlockOverlayProps {
@@ -42,13 +48,16 @@ export function OrderBlockOverlay({
       ? (new Date(sortedCandles[swingCandleIndex + 1].timestamp).getTime() / 1000) as Time
       : (new Date(Date.now() / 1000).getTime()) as Time;
 
+    const createdSeries: Array<ISeriesApi<"Area"> | ISeriesApi<"Line">> = [];
+
     // Create a box series (using area series as workaround)
-    const boxSeries = chart.addAreaSeries({
+    const boxSeries = chart.addSeries(AreaSeries, {
       lineColor: signal.direction === "long" ? "#10b981" : "#ef4444",
       topColor: signal.direction === "long" ? "#10b98140" : "#ef444440",
       bottomColor: signal.direction === "long" ? "#10b98110" : "#ef444410",
       lineWidth: 1,
     });
+    createdSeries.push(boxSeries);
 
     const boxData = [
       { time: obTime, value: obCandle.high },
@@ -58,7 +67,7 @@ export function OrderBlockOverlay({
     ];
 
     // Draw box using line series for borders
-    const topLine = chart.addLineSeries({
+    const topLine = chart.addSeries(LineSeries, {
       color: signal.direction === "long" ? "#10b981" : "#ef4444",
       lineWidth: 2,
     });
@@ -67,7 +76,7 @@ export function OrderBlockOverlay({
       { time: nextTime, value: obCandle.high },
     ]);
 
-    const bottomLine = chart.addLineSeries({
+    const bottomLine = chart.addSeries(LineSeries, {
       color: signal.direction === "long" ? "#10b981" : "#ef4444",
       lineWidth: 2,
     });
@@ -76,8 +85,16 @@ export function OrderBlockOverlay({
       { time: nextTime, value: obCandle.low },
     ]);
 
+    createdSeries.push(topLine, bottomLine);
+
     return () => {
-      // Cleanup handled by chart
+      createdSeries.forEach((series) => {
+        try {
+          chart.removeSeries(series);
+        } catch {
+          // Series might already be removed
+        }
+      });
     };
   }, [chart, signal, candles]);
 

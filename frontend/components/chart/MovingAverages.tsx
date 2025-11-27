@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { IChartApi, ISeriesApi, Time, LineData } from "lightweight-charts";
+import {
+  IChartApi,
+  ISeriesApi,
+  LineData,
+  LineSeries,
+  Time,
+} from "lightweight-charts";
 import { Candle } from "@/lib/api";
 
 interface MovingAveragesProps {
@@ -67,9 +73,6 @@ export function MovingAverages({
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
     try {
-      // Check if chart is still valid
-      if (!chart.addLineSeries) return;
-
       // Remove existing MA series if they exist
       [ma7SeriesRef.current, ma25SeriesRef.current, ma99SeriesRef.current].forEach((series) => {
         if (series) {
@@ -89,7 +92,7 @@ export function MovingAverages({
       if (showMA7 && filteredCandles.length >= 7) {
         const ma7Data = calculateMA(filteredCandles, 7);
         if (ma7Data.length > 0) {
-          const ma7Series = chart.addLineSeries({
+          const ma7Series = chart.addSeries(LineSeries, {
             color: "#3b82f6", // Blue
             lineWidth: 1,
             title: "MA(7)",
@@ -105,7 +108,7 @@ export function MovingAverages({
       if (showMA25 && filteredCandles.length >= 25) {
         const ma25Data = calculateMA(filteredCandles, 25);
         if (ma25Data.length > 0) {
-          const ma25Series = chart.addLineSeries({
+          const ma25Series = chart.addSeries(LineSeries, {
             color: "#f59e0b", // Amber/Orange
             lineWidth: 1,
             title: "MA(25)",
@@ -121,7 +124,7 @@ export function MovingAverages({
       if (showMA99 && filteredCandles.length >= 99) {
         const ma99Data = calculateMA(filteredCandles, 99);
         if (ma99Data.length > 0) {
-          const ma99Series = chart.addLineSeries({
+          const ma99Series = chart.addSeries(LineSeries, {
             color: "#8b5cf6", // Purple
             lineWidth: 1,
             title: "MA(99)",

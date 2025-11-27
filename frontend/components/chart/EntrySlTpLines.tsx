@@ -4,6 +4,7 @@ import { useEffect, useRef } from "react";
 import {
   IChartApi,
   ISeriesApi,
+  LineSeries,
   LineStyle,
   LineWidth,
   Time,
@@ -72,7 +73,7 @@ export function EntrySlTpLines({
     };
 
     try {
-      if (!chart.timeScale || !chart.addLineSeries) return cleanupSeries();
+      if (!chart.timeScale) return cleanupSeries();
 
       cleanupSeries();
 
@@ -124,7 +125,7 @@ export function EntrySlTpLines({
       ) => {
         if (value == null) return;
 
-        const lineSeries = chart.addLineSeries({
+        const lineSeries = chart.addSeries(LineSeries, {
           color,
           lineWidth,
           lineStyle,

@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect } from "react";
-import { IChartApi, ISeriesApi, Time } from "lightweight-charts";
+import { useEffect, useRef } from "react";
+import {
+  IChartApi,
+  ISeriesApi,
+  ISeriesMarkersPluginApi,
+  SeriesMarker,
+  Time,
+  createSeriesMarkers,
+} from "lightweight-charts";
 import { SwingPoint } from "@/lib/api";
 import { Candle } from "@/lib/api";
 
@@ -18,70 +25,73 @@ export function SwingMarkers({
   swings,
   candles,
 }: SwingMarkersProps) {
+  const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+
+  // Attach/detach the series markers plugin as the series changes
   useEffect(() => {
-    if (!chart || !series) {
-      // Clear markers if chart/series are not available
-      try {
-        if (series && series.setMarkers) {
-          series.setMarkers([]);
-        }
-      } catch (error) {
-        // Series might be disposed, ignore
+    if (!series) {
+      if (markersPluginRef.current) {
+        markersPluginRef.current.setMarkers([]);
+        markersPluginRef.current.detach();
+        markersPluginRef.current = null;
       }
       return;
     }
 
-    try {
-      // Check if chart/series are still valid (not disposed)
-      // Try to access a property that would throw if disposed
-      if (!chart.timeScale || !series.setMarkers) return;
-
-      // If no swings or candles, clear markers
-      if (!swings.length || !candles.length) {
-        series.setMarkers([]);
-        return;
-      }
-
-      const markers = swings
-        .map((swing) => {
-          const candle = candles.find(
-            (c) => Math.abs(new Date(c.timestamp).getTime() - new Date(swing.timestamp).getTime()) < 60000
-          );
-          
-          if (!candle) return null;
-
-          return {
-            time: (new Date(swing.timestamp).getTime() / 1000) as Time,
-            position: swing.type === "high" ? ("aboveBar" as const) : ("belowBar" as const),
-            color: swing.type === "high" ? "#10b981" : "#ef4444",
-            shape: swing.type === "high" ? ("circle" as const) : ("circle" as const),
-            size: 1.5,
-            text: swing.type === "high" ? "SH" : "SL",
-          };
-        })
-        .filter(Boolean)
-        // Sort markers by time in ascending order (required by lightweight-charts)
-        .sort((a, b) => {
-          if (!a || !b) return 0;
-          return (a.time as number) - (b.time as number);
-        });
-
-      series.setMarkers(markers as any);
-    } catch (error) {
-      // Chart or series might be disposed, ignore the error
-      console.warn("SwingMarkers: Chart or series is disposed", error);
-      return;
+    // Always detach any existing plugin before attaching to a new series
+    if (markersPluginRef.current) {
+      markersPluginRef.current.setMarkers([]);
+      markersPluginRef.current.detach();
     }
+
+    markersPluginRef.current = createSeriesMarkers(series, [], {
+      autoScale: false,
+    });
 
     return () => {
-      try {
-        if (series && series.setMarkers) {
-          series.setMarkers([]);
-        }
-      } catch (error) {
-        // Series might be disposed, ignore
+      if (markersPluginRef.current) {
+        markersPluginRef.current.setMarkers([]);
+        markersPluginRef.current.detach();
+        markersPluginRef.current = null;
       }
     };
+  }, [series]);
+
+  useEffect(() => {
+    const plugin = markersPluginRef.current;
+    if (!chart || !series || !plugin) {
+      plugin?.setMarkers([]);
+      return;
+    }
+
+    // Clear markers if prerequisites are missing
+    if (!swings.length || !candles.length) {
+      plugin.setMarkers([]);
+      return;
+    }
+
+    const markers = swings
+      .map((swing) => {
+        const candle = candles.find(
+          (c) =>
+            Math.abs(new Date(c.timestamp).getTime() - new Date(swing.timestamp).getTime()) < 60000
+        );
+
+        if (!candle) return null;
+
+        return {
+          time: (new Date(swing.timestamp).getTime() / 1000) as Time,
+          position: swing.type === "high" ? ("aboveBar" as const) : ("belowBar" as const),
+          color: swing.type === "high" ? "#10b981" : "#ef4444",
+          shape: "circle" as const,
+          size: 1.5,
+          text: swing.type === "high" ? "SH" : "SL",
+        };
+      })
+      .filter((marker): marker is SeriesMarker<Time> => Boolean(marker))
+      .sort((a, b) => (a.time as number) - (b.time as number));
+
+    plugin.setMarkers(markers);
   }, [chart, series, swings, candles]);
 
   return null;

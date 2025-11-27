@@ -1,7 +1,13 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { IChartApi, ISeriesApi, Time } from "lightweight-charts";
+import {
+  IChartApi,
+  ISeriesApi,
+  LineSeries,
+  LineStyle,
+  Time,
+} from "lightweight-charts";
 import { TradingSignal, SwingPoint } from "@/lib/api";
 
 interface FibonacciOverlayProps {
@@ -71,16 +77,16 @@ export function FibonacciOverlay({
       let series: ISeriesApi<"Line">;
       if (index === 0 || index === fibLevels.length - 1) {
         // First and last level - solid line
-        series = chart.addLineSeries({
+        series = chart.addSeries(LineSeries, {
           color: "#ef4444",
           lineWidth: 2,
         });
       } else {
         // Middle levels - dashed
-        series = chart.addLineSeries({
+        series = chart.addSeries(LineSeries, {
           color: "#10b981",
           lineWidth: 1,
-          lineStyle: 2,
+          lineStyle: LineStyle.Dashed,
         });
       }
       
