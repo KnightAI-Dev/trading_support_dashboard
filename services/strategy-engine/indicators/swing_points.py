@@ -100,10 +100,19 @@ def calculate_swing_points(
         
         # Identify Swing Highs
         # A swing high must be the maximum in its rolling window AND have valid neighbors
+        # For latest candles, we need to handle them differently since they don't have future data
         high_rolling_max = df_work['high'].rolling(
             window=rolling_window, 
             center=True, 
             min_periods=rolling_window
+        ).max()
+        
+        # For latest candles, also calculate a trailing max (only looking back)
+        # This allows us to detect swing points in the latest candles
+        high_trailing_max = df_work['high'].rolling(
+            window=rolling_window,
+            center=False,
+            min_periods=window + 1  # Require at least window+1 candles (window before + current)
         ).max()
         
         # Use Decimal for exact comparison to avoid floating point precision issues
@@ -130,31 +139,84 @@ def calculate_swing_points(
         
         # Check that the high equals the rolling max (it's a local maximum)
         # Use Decimal comparison for exact precision with small price values
-        # AND has valid data on both sides
-        is_swing_high = (
+        # Allow latest candles if they have enough past data (even without future data)
+        has_past_data_high = df_work['high'].shift(window).notna()
+        has_future_data_high = df_work['high'].shift(-window).notna()
+        
+        # Identify which candles are in the latest 'window' positions
+        # These candles don't have future data, so we use trailing max instead
+        num_rows = len(df_work)
+        latest_candle_indices = set(df_work.index[-window:]) if num_rows >= window else set()
+        is_latest_candle = df_work.index.isin(latest_candle_indices)
+        
+        # For normal candles: use centered rolling max and require both past and future data
+        # For latest candles: use trailing max and only require past data
+        normal_swing_high = (
             decimal_equals(df_work['high'], high_rolling_max) &
-            (df_work['high'].shift(window).notna()) &
-            (df_work['high'].shift(-window).notna()) &
-            (df_work['high'].notna())
+            has_past_data_high &
+            has_future_data_high &
+            high_rolling_max.notna() &
+            (df_work['high'].notna()) &
+            ~is_latest_candle  # Exclude latest candles from this check
         )
+        
+        # For latest candles, check if they're the max in the trailing window
+        latest_swing_high = (
+            decimal_equals(df_work['high'], high_trailing_max) &
+            has_past_data_high &
+            high_trailing_max.notna() &
+            (df_work['high'].notna()) &
+            is_latest_candle  # Only check latest candles
+        )
+        
+        # Combine both conditions
+        is_swing_high = normal_swing_high | latest_swing_high
         
         # Identify Swing Lows
         # A swing low must be the minimum in its rolling window AND have valid neighbors
+        # For latest candles, we need to handle them differently since they don't have future data
         low_rolling_min = df_work['low'].rolling(
             window=rolling_window, 
             center=True, 
             min_periods=rolling_window
         ).min()
         
+        # For latest candles, also calculate a trailing min (only looking back)
+        # This allows us to detect swing points in the latest candles
+        low_trailing_min = df_work['low'].rolling(
+            window=rolling_window,
+            center=False,
+            min_periods=window + 1  # Require at least window+1 candles (window before + current)
+        ).min()
+        
         # Check that the low equals the rolling min (it's a local minimum)
         # Use Decimal comparison for exact precision with small price values
-        # AND has valid data on both sides
-        is_swing_low = (
+        # Allow latest candles if they have enough past data (even without future data)
+        has_past_data_low = df_work['low'].shift(window).notna()
+        has_future_data_low = df_work['low'].shift(-window).notna()
+        
+        # For normal candles: use centered rolling min and require both past and future data
+        # For latest candles: use trailing min and only require past data
+        normal_swing_low = (
             decimal_equals(df_work['low'], low_rolling_min) &
-            (df_work['low'].shift(window).notna()) &
-            (df_work['low'].shift(-window).notna()) &
-            (df_work['low'].notna())
+            has_past_data_low &
+            has_future_data_low &
+            low_rolling_min.notna() &
+            (df_work['low'].notna()) &
+            ~is_latest_candle  # Exclude latest candles from this check
         )
+        
+        # For latest candles, check if they're the min in the trailing window
+        latest_swing_low = (
+            decimal_equals(df_work['low'], low_trailing_min) &
+            has_past_data_low &
+            low_trailing_min.notna() &
+            (df_work['low'].notna()) &
+            is_latest_candle  # Only check latest candles
+        )
+        
+        # Combine both conditions
+        is_swing_low = normal_swing_low | latest_swing_low
         
         # Extract swing points as (datetime, price) tuples using vectorized operations
         # float() handles both Decimal and numeric types automatically
@@ -237,9 +299,16 @@ def filter_between(
     if keep not in ("min", "max"):
         keep = "min"  # Default to min
     
-    # If we don't have enough boundary points, return all other points
+    # If we don't have enough boundary points, we can't filter between intervals
+    # But we should preserve points_other that are outside the boundaries
     if len(points_main) < 2:
-        return sorted(points_other.copy(), key=lambda x: x[0]) if points_other else []
+        # If there's only one main point, return all points_other that are outside it
+        if len(points_main) == 1 and points_other:
+            main_dt = points_main[0][0]
+            # Return all points_other (they're all "outside" a single boundary point)
+            return sorted(points_other.copy(), key=lambda x: x[0])
+        # If no main points, return empty
+        return []
     
     # Ensure points are sorted by datetime
     points_main = sorted(points_main, key=lambda x: x[0])
@@ -247,12 +316,29 @@ def filter_between(
     
     filtered = []
     
+    # Remove duplicate datetimes in points_main to avoid invalid intervals
+    # Keep only the first occurrence of each datetime
+    seen_dts = set()
+    unique_points_main = []
+    for point in points_main:
+        dt = point[0]
+        if dt not in seen_dts:
+            seen_dts.add(dt)
+            unique_points_main.append(point)
+    
+    # If we lost points due to duplicates, update points_main
+    if len(unique_points_main) < len(points_main):
+        points_main = unique_points_main
+        # Re-check if we still have enough points
+        if len(points_main) < 2:
+            return []
+    
     # Process each interval between consecutive main points
     for i in range(len(points_main) - 1):
         start_dt = points_main[i][0]  # datetime of start point
         end_dt = points_main[i + 1][0]  # datetime of end point
         
-        # Skip if datetimes are invalid
+        # Skip if datetimes are invalid (shouldn't happen after duplicate removal, but safety check)
         if start_dt >= end_dt:
             continue
         
@@ -276,17 +362,21 @@ def filter_between(
         filtered.append(selected)
     
     # Ensure outermost points are preserved if they exist
-    # if points_other:
-    #     first_point = points_other[0]
-    #     last_point = points_other[-1]
+    # Points before the first main point or after the last main point should be included
+    if points_other:
+        points_other_sorted = sorted(points_other, key=lambda x: x[0])
+        first_point = points_other_sorted[0]
+        last_point = points_other_sorted[-1]
         
-    #     # Add left-most point if not already included
-    #     if first_point not in filtered:
-    #         filtered.insert(0, first_point)
+        # Add left-most point if it's before the first main point and not already included
+        if points_main and first_point[0] < points_main[0][0]:
+            if first_point not in filtered:
+                filtered.insert(0, first_point)
         
-    #     # Add right-most point if not already included
-    #     if last_point not in filtered:
-    #         filtered.append(last_point)
+        # Add right-most point if it's after the last main point and not already included
+        if points_main and last_point[0] > points_main[-1][0]:
+            if last_point not in filtered:
+                filtered.append(last_point)
     
     # Return sorted by datetime to ensure consistent ordering
     return sorted(filtered, key=lambda x: x[0])
@@ -359,25 +449,37 @@ def enforce_strict_alternation(
                 # For highs, keep the higher one using Decimal comparison
                 if final_highs:
                     last_price_decimal = to_decimal(final_highs[-1][1])
-                    if last_price_decimal is not None and val_decimal > last_price_decimal:
-                        final_highs[-1] = (dt, val)
+                    if last_price_decimal is not None:
+                        if val_decimal > last_price_decimal:
+                            # New high is higher - replace the previous one
+                            final_highs[-1] = (dt, val)
+                            # last_type stays 'H' - no need to update
+                        # else: new high is lower or equal - skip it completely
+                        # Don't update last_type - keep it as 'H' to prevent adding
+                # Always skip when same type (either replaced or lower/equal)
+                continue
             else:  # point_type == 'L'
                 # For lows, keep the lower one using Decimal comparison
                 if final_lows:
                     last_price_decimal = to_decimal(final_lows[-1][1])
-                    if last_price_decimal is not None and val_decimal < last_price_decimal:
-                        final_lows[-1] = (dt, val)
+                    if last_price_decimal is not None:
+                        if val_decimal < last_price_decimal:
+                            # New low is lower - replace the previous one
+                            final_lows[-1] = (dt, val)
+                            # last_type stays 'L' - no need to update
+                        # else: new low is higher or equal - skip it completely
+                        # Don't update last_type - keep it as 'L' to prevent adding
+                # Always skip when same type (either replaced or higher/equal)
+                continue
         else:
             # Different type - add to appropriate list
             if point_type == 'H':
                 final_highs.append((dt, val))
             else:  # point_type == 'L'
                 final_lows.append((dt, val))
-        
-        last_type = point_type
+            last_type = point_type
     
     return final_highs, final_lows
-
 
 def filter_rate(
     highs: List[Tuple[int, float]], 
@@ -394,8 +496,8 @@ def filter_rate(
     1. For each swing high, compare with nearest left and right swing lows based on datetime
     2. Calculate percentage move from each low to the high
     3. If both moves are < rate: remove the high, keep the lower of the two lows
-    4. If only left move < rate: remove the high and the left low
-    5. If only right move < rate: remove the high and the right low
+    4. If only left move < rate: remove the left low
+    5. If only right move < rate: remove the right low
     6. If both moves >= rate: keep the high
     7. Finally, enforce strict alternation
     
@@ -497,17 +599,19 @@ def filter_rate(
         
         # CASE 2: Only left side fails the rate requirement
         if left_rate < rate_decimal:
-            # Remove the left low and the high
+            # Remove only the left low, keep the high
             if left_low in clean_lows:
                 clean_lows.remove(left_low)
-            continue  # Don't add high to clean_highs
+            clean_highs.append((h_dt, h_val))
+            continue
         
         # CASE 3: Only right side fails the rate requirement
         if right_rate < rate_decimal:
-            # Remove the right low and the high
+            # Remove only the right low, keep the high
             if right_low in clean_lows:
                 clean_lows.remove(right_low)
-            continue  # Don't add high to clean_highs
+            clean_highs.append((h_dt, h_val))
+            continue
         
         # CASE 4: Both rates meet the requirement → keep the high
         clean_highs.append((h_dt, h_val))
@@ -516,4 +620,143 @@ def filter_rate(
     clean_highs, clean_lows = enforce_strict_alternation(clean_highs, clean_lows)
     
     return clean_highs, clean_lows
+
+
+# def filter_rate(
+#     highs: List[Tuple[int, float]], 
+#     lows: List[Tuple[int, float]], 
+#     rate: float = 0.03
+# ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
+#     """
+#     Filter swing points based on minimum price movement rate (percentage).
+    
+#     This function removes swing points that don't meet the minimum price movement
+#     requirement, helping to filter out noise and keep only significant swings.
+    
+#     Rules:
+#     1. For each swing high, compare with nearest left and right swing lows based on datetime
+#     2. Calculate percentage move from each low to the high
+#     3. If both moves are < rate: remove the high, keep the lower of the two lows
+#     4. If only left move < rate: remove the high and the left low
+#     5. If only right move < rate: remove the high and the right low
+#     6. If both moves >= rate: keep the high
+#     7. Finally, enforce strict alternation
+    
+#     Args:
+#         highs: List of (datetime, price) tuples for swing highs. Should be sorted by datetime.
+#         lows: List of (datetime, price) tuples for swing lows. Should be sorted by datetime.
+#         rate: Minimum percentage move required (e.g., 0.03 = 3%). Must be > 0.
+        
+#     Returns:
+#         Tuple of (filtered_highs, filtered_lows) with points that meet the rate requirement.
+#         Both lists are sorted by datetime.
+#     """
+#     # Input validation
+#     if not highs and not lows:
+#         return [], []
+    
+#     if not isinstance(highs, list) or not isinstance(lows, list):
+#         return [], []
+    
+#     # Validate rate
+#     if not isinstance(rate, (int, float)) or rate <= 0:
+#         # If rate is invalid, return copies of original lists
+#         return highs.copy() if highs else [], lows.copy() if lows else []
+    
+#     # Create copies to avoid modifying original lists
+#     # Sort by datetime (position 0)
+#     highs = sorted(highs, key=lambda x: x[0])
+#     lows = sorted(lows, key=lambda x: x[0])
+    
+#     # Build new clean lists
+#     clean_highs = []
+#     clean_lows = lows.copy()  # Start with all lows, remove as needed
+    
+#     # Convert rate to Decimal for exact comparison
+#     rate_decimal = to_decimal_safe(rate)
+    
+#     # Process each swing high
+#     for h_dt, h_val in highs:
+#         # Validate high tuple
+#         if not isinstance(h_dt, (int, np.integer)) or not isinstance(h_val, (int, float, np.floating, Decimal)):
+#             continue
+        
+#         # Convert high value to Decimal
+#         h_val_decimal = to_decimal(h_val)
+#         if h_val_decimal is None or h_val_decimal <= 0:
+#             continue  # Invalid price
+        
+#         # Find nearest left low (after this high - later in time)
+#         # clean_lows is sorted by datetime ascending, so lows after h_dt are also sorted ascending
+#         # The first one (index 0) is the nearest one after the high
+#         left_candidates = [l for l in clean_lows if l[0] > h_dt]
+#         left_low = left_candidates[0] if left_candidates else None
+        
+#         # Find nearest right low (before this high - earlier in time)
+#         # clean_lows is sorted by datetime ascending, so lows before h_dt are also sorted ascending
+#         # The last one (index -1) is the nearest one before the high
+#         right_candidates = [l for l in clean_lows if l[0] < h_dt]
+#         right_low = right_candidates[-1] if right_candidates else None
+        
+#         # Edge case: keep high if no left OR right low exists
+#         if left_low is None or right_low is None:
+#             clean_highs.append((h_dt, h_val))
+#             continue
+        
+#         # Convert low prices to Decimal
+#         left_low_decimal = to_decimal(left_low[1])
+#         right_low_decimal = to_decimal(right_low[1])
+        
+#         if left_low_decimal is None or right_low_decimal is None:
+#             continue
+        
+#         # Validate low prices
+#         if left_low_decimal <= 0 or right_low_decimal <= 0:
+#             continue  # Invalid prices
+        
+#         # Compute percentage move (price increase from low to high) using Decimal
+#         try:
+#             left_rate = (h_val_decimal - left_low_decimal) / left_low_decimal
+#             right_rate = (h_val_decimal - right_low_decimal) / right_low_decimal
+#         except (ZeroDivisionError, TypeError, ValueError):
+#             # Skip if we can't calculate rates
+#             continue
+        
+#         # CASE 1: Both sides fail the rate requirement
+#         if left_rate < rate_decimal and right_rate < rate_decimal:
+#             # Remove the HIGH completely
+#             # Keep the lower of the two lows (more significant) using Decimal comparison
+#             lower_low = left_low if left_low_decimal < right_low_decimal else right_low
+            
+#             # Remove both lows from clean_lows, then add back the lower one
+#             clean_lows = [
+#                 l for l in clean_lows 
+#                 if l not in (left_low, right_low)
+#             ]
+#             if lower_low not in clean_lows:
+#                 clean_lows.append(lower_low)
+#                 clean_lows.sort(key=lambda x: x[0])  # Maintain sorted order by datetime
+#             continue
+        
+#         # CASE 2: Only left side fails the rate requirement
+#         if left_rate < rate_decimal:
+#             # Remove the left low and the high
+#             if left_low in clean_lows:
+#                 clean_lows.remove(left_low)
+#             continue  # Don't add high to clean_highs
+        
+#         # CASE 3: Only right side fails the rate requirement
+#         if right_rate < rate_decimal:
+#             # Remove the right low and the high
+#             if right_low in clean_lows:
+#                 clean_lows.remove(right_low)
+#             continue  # Don't add high to clean_highs
+        
+#         # CASE 4: Both rates meet the requirement → keep the high
+#         clean_highs.append((h_dt, h_val))
+    
+#     # Final step: enforce strict alternation to ensure proper high-low-high-low pattern
+#     clean_highs, clean_lows = enforce_strict_alternation(clean_highs, clean_lows)
+    
+#     return clean_highs, clean_lows
 
