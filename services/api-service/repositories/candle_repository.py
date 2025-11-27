@@ -52,13 +52,14 @@ class CandleRepository(BaseRepository):
         query = """
             SELECT DISTINCT 
                 s.symbol_name,
-                t.tf_name
+                t.tf_name,
+                t.seconds
             FROM ohlcv_candles oc
             INNER JOIN symbols s ON oc.symbol_id = s.symbol_id
             INNER JOIN timeframe t ON oc.timeframe_id = t.timeframe_id
             WHERE s.is_active = TRUE
             AND s.removed_at IS NULL
-            ORDER BY s.symbol_name, t.tf_name
+            ORDER BY s.symbol_name, t.seconds
         """
         
         rows = self.execute_query(query)
@@ -71,20 +72,31 @@ class CandleRepository(BaseRepository):
             }
         
         from collections import defaultdict
-        symbol_timeframes = defaultdict(set)
+        symbol_timeframes = defaultdict(dict)  # Changed from set to dict to store tf_name -> seconds mapping
+        timeframe_seconds_map = {}  # Map to store tf_name -> seconds for all timeframes
+        
         for row in rows:
-            symbol_name, tf_name = row[0], row[1]
-            if symbol_name and tf_name:
-                symbol_timeframes[symbol_name].add(tf_name)
+            symbol_name, tf_name, seconds = row[0], row[1], row[2]
+            if symbol_name and tf_name and seconds is not None:
+                symbol_timeframes[symbol_name][tf_name] = seconds
+                timeframe_seconds_map[tf_name] = seconds
         
         symbols = sorted(symbol_timeframes.keys())
-        all_timeframes = sorted({tf for tfs in symbol_timeframes.values() for tf in tfs})
+        
+        # Sort all timeframes by seconds
+        all_timeframes = sorted(
+            set(timeframe_seconds_map.keys()),
+            key=lambda tf: timeframe_seconds_map[tf]
+        )
         
         return {
             "symbols": symbols,
             "timeframes": all_timeframes,
             "symbol_timeframes": {
-                symbol: sorted(list(timeframes))
+                symbol: sorted(
+                    list(timeframes.keys()),
+                    key=lambda tf: timeframes[tf]
+                )
                 for symbol, timeframes in symbol_timeframes.items()
             },
         }

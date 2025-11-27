@@ -98,6 +98,14 @@ export function EntrySlTpLines({
       const rangeStart = fromTimestamp as Time;
       const extendedRangeEnd = (toTimestamp + 86400) as Time;
 
+      // Calculate swing line time range: from min to max of swing timestamps
+      const swingTimeRange = swingTimestamps.length === 2
+        ? {
+            start: Math.min(swingHighSeconds!, swingLowSeconds!) as Time,
+            end: Math.max(swingHighSeconds!, swingLowSeconds!) as Time,
+          }
+        : null;
+
       const addHorizontalLine = (
         value: number | null | undefined,
         {
@@ -105,11 +113,13 @@ export function EntrySlTpLines({
           lineWidth = 1 as LineWidth,
           lineStyle = LineStyle.Solid,
           title,
+          timeRange,
         }: {
           color: string;
           lineWidth?: LineWidth;
           lineStyle?: LineStyle;
           title: string;
+          timeRange?: { start: Time; end: Time };
         }
       ) => {
         if (value == null) return;
@@ -124,9 +134,13 @@ export function EntrySlTpLines({
           crosshairMarkerVisible: false,
         });
 
+        // Use custom time range if provided, otherwise use default range
+        const startTime = timeRange ? timeRange.start : rangeStart;
+        const endTime = timeRange ? timeRange.end : extendedRangeEnd;
+
         lineSeries.setData([
-          { time: rangeStart, value },
-          { time: extendedRangeEnd, value },
+          { time: startTime, value },
+          { time: endTime, value },
         ]);
 
         seriesRef.current.push(lineSeries);
@@ -162,19 +176,26 @@ export function EntrySlTpLines({
         title: "TP 3",
       });
 
-      addHorizontalLine(signal.swing_high, {
-        color: COLORS.swingHigh,
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        title: "Swing High",
-      });
+      // Swing high and low lines only between their timestamps
+      if (swingTimeRange && signal.swing_high != null) {
+        addHorizontalLine(signal.swing_high, {
+          color: COLORS.swingHigh,
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          title: "Swing High",
+          timeRange: swingTimeRange,
+        });
+      }
 
-      addHorizontalLine(signal.swing_low, {
-        color: COLORS.swingLow,
-        lineWidth: 2,
-        lineStyle: LineStyle.Solid,
-        title: "Swing Low",
-      });
+      if (swingTimeRange && signal.swing_low != null) {
+        addHorizontalLine(signal.swing_low, {
+          color: COLORS.swingLow,
+          lineWidth: 2,
+          lineStyle: LineStyle.Solid,
+          title: "Swing Low",
+          timeRange: swingTimeRange,
+        });
+      }
     } catch (error) {
       console.warn("EntrySlTpLines: Chart is disposed", error);
       cleanupSeries();

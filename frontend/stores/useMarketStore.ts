@@ -58,7 +58,7 @@ const defaultChartSettings: ChartSettings = {
 
 export const useMarketStore = create<MarketState>((set) => ({
   selectedSymbol: "BTCUSDT",
-  selectedTimeframe: "1h",
+  selectedTimeframe: "30m",
   availableSymbols: DEFAULT_SYMBOLS,
   availableTimeframes: DEFAULT_TIMEFRAMES,
   symbolTimeframes: DEFAULT_SYMBOLS.reduce<Record<string, Timeframe[]>>((acc, symbol) => {

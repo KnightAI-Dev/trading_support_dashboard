@@ -142,7 +142,6 @@ export function useSignalFeed() {
           
           // Handle symbol_update messages (for price updates)
           if (parsed.type === "symbol_update" && parsed.data) {
-            console.log("symbol_update");
             notifySymbolUpdate(parsed.data as Partial<SymbolItem>);
             setLastMessageAt(Date.now());
             return;

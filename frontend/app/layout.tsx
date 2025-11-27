@@ -8,15 +8,16 @@ import { ErrorBoundary } from "@/components/error/ErrorBoundary";
 const inter = Inter({ 
   subsets: ["latin"],
   display: "swap",
+  fallback: ["system-ui", "arial"], // Explicit fallback fonts
+  adjustFontFallback: true, // Better fallback handling
+  preload: false, // Disable preload to avoid blocking
 });
 
 export const metadata: Metadata = {
   title: "Trading Support Dashboard",
   description: "Real-time crypto market structure analysis and trading signals",
   icons: {
-    icon: "/icon.svg",
-    shortcut: "/icon.svg",
-    apple: "/icon.svg",
+    icon: "/favicon.ico",
   },
 };
 

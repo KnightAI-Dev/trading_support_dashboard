@@ -356,13 +356,13 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
                   <SelectItem value="asc">
                     <div className="flex items-center gap-2">
                       <ArrowUp className="h-3 w-3" />
-                      <span>Ascending</span>
+                      <span>Asc</span>
                     </div>
                   </SelectItem>
                   <SelectItem value="desc">
                     <div className="flex items-center gap-2">
                       <ArrowDown className="h-3 w-3" />
-                      <span>Descending</span>
+                      <span>Dsc</span>
                     </div>
                   </SelectItem>
                 </SelectContent>
