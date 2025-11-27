@@ -112,9 +112,10 @@ export function SignalList({
       setContainerWidth(entry.contentRect.width);
     });
     observer.observe(node);
+    // Recalculate width immediately when ref is attached or data appears
     setContainerWidth(node.clientWidth);
     return () => observer.disconnect();
-  }, [mounted]);
+  }, [mounted, signalIds.length]);
 
   const rowProps = useMemo<SignalListRowProps>(
     () => ({
@@ -128,19 +129,11 @@ export function SignalList({
     return <div className="h-[400px] w-full rounded-lg border border-dashed border-border/40" />;
   }
 
-  if (!signalIds.length) {
-    return (
-      <Card className="flex h-[320px] items-center justify-center text-muted-foreground">
-        No signals match the current filters.
-      </Card>
-    );
-  }
-
   const computedWidth = Math.max(containerWidth, 320);
-
   const headerHeight = 48;
   const availableHeight = listHeight - headerHeight;
 
+  // Always render container structure - don't return early
   return (
     <div
       ref={containerRef}
@@ -148,17 +141,23 @@ export function SignalList({
       style={{ height: listHeight, minHeight: MIN_LIST_HEIGHT }}
     >
       <SignalTableHeader />
-      <div className="flex-1 overflow-hidden" style={{ height: availableHeight }}>
-        <List
-          defaultHeight={availableHeight}
-          style={{ height: availableHeight, width: computedWidth }}
-          rowCount={signalIds.length}
-          rowHeight={rowHeight}
-          rowProps={rowProps}
-          rowComponent={VirtualizedRow}
-          overscanCount={overscanCount}
-        />
-      </div>
+      {!signalIds.length ? (
+        <Card className="flex flex-1 items-center justify-center text-muted-foreground">
+          No signals match the current filters.
+        </Card>
+      ) : (
+        <div className="flex-1 overflow-hidden" style={{ height: availableHeight }}>
+          <List
+            defaultHeight={availableHeight}
+            style={{ height: availableHeight, width: computedWidth }}
+            rowCount={signalIds.length}
+            rowHeight={rowHeight}
+            rowProps={rowProps}
+            rowComponent={VirtualizedRow}
+            overscanCount={overscanCount}
+          />
+        </div>
+      )}
     </div>
   );
 }
