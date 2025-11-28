@@ -93,19 +93,19 @@ export const SignalRow = memo(
     return (
       <div
         className={cn(
-          "grid grid-cols-[150px_100px_80px_100px_100px_100px_100px_100px_100px_100px_120px_120px_80px_120px_100px] gap-4 items-center w-full",
+          "grid grid-cols-[120px_80px_50px_100px_100px_100px_100px_100px_100px_100px_120px_120px_80px_120px_80px] gap-4 items-center w-full",
           "border-b border-border/50 bg-card px-4 py-3"
         )}
         role="row"
         aria-label={`Signal for ${signal.symbol}`}
       >
         {/* Symbol */}
-        <div className="font-semibold text-sm text-foreground">
+        <div className="text-center font-semibold text-sm text-foreground">
           {signal.symbol.replace("USDT", "/USDT")}
         </div>
 
         {/* Direction */}
-        <div>
+        <div className="text-center">
           <Badge 
             variant={directionIsLong ? "long" : "short"} 
             className="px-2.5 py-1 text-[10px] font-medium"
@@ -120,7 +120,7 @@ export const SignalRow = memo(
         </div>
 
         {/* Timeframe */}
-        <div className="text-xs uppercase font-medium text-muted-foreground">
+        <div className="text-center text-xs uppercase font-medium text-muted-foreground">
           {signal.timeframe || "-"}
         </div>
 

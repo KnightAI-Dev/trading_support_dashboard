@@ -133,6 +133,7 @@ const sortSignals = (
 export function SignalsClient({ initialSignals }: SignalsClientProps) {
   const [searchTerm, setSearchTerm] = useState("");
   const [directionFilter, setDirectionFilter] = useState<"all" | "long" | "short">("all");
+  const [topNPerSymbol, setTopNPerSymbol] = useState<number | null>(null);
   const [sortOptions, setSortOptions] = useState<SortOption[]>([
     { field: "swing_timestamp", direction: "desc" },
     { field: "price_score", direction: "asc" },
@@ -160,14 +161,46 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
     const lookup = useSignalsStore.getState().signalMap;
     const query = searchTerm.trim().toLowerCase();
 
-    return signalIds.filter((id) => {
+    let filtered = signalIds.filter((id) => {
       const signal = lookup[id];
       if (!signal) return false;
       if (query && !signal.symbol.toLowerCase().includes(query)) return false;
       if (directionFilter !== "all" && signal.direction !== directionFilter) return false;
       return true;
     });
-  }, [signalIds, searchTerm, directionFilter]);
+
+    // Apply "top N per symbol" filter if set – always based on latest timestamp
+    if (topNPerSymbol !== null && topNPerSymbol > 0) {
+      // Sort once by timestamp (newest first) so we can walk in order
+      const sortedByTimestamp = filtered
+        .map((id) => ({
+          id,
+          signal: lookup[id],
+        }))
+        .filter((item): item is { id: string; signal: TradingSignal } => !!item.signal)
+        .sort((a, b) => {
+          const aTime = new Date(a.signal.timestamp).getTime();
+          const bTime = new Date(b.signal.timestamp).getTime();
+          return bTime - aTime;
+        });
+
+      const perSymbolCount = new Map<string, number>();
+      const limited: string[] = [];
+
+      for (const { id, signal } of sortedByTimestamp) {
+        const symbol = signal.symbol;
+        const currentCount = perSymbolCount.get(symbol) ?? 0;
+        if (currentCount >= topNPerSymbol) continue;
+
+        perSymbolCount.set(symbol, currentCount + 1);
+        limited.push(id);
+      }
+
+      filtered = limited;
+    }
+
+    return filtered;
+  }, [signalIds, searchTerm, directionFilter, topNPerSymbol]);
 
   // Sort filtered signals
   const filteredAndSortedIds = useMemo(() => {
@@ -289,7 +322,7 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
           transition={{ duration: 0.3, delay: 0.1 }}
         >
           <Card className="p-4 md:p-6">
-            <div className="flex flex-wrap items-center gap-4 md:gap-6">
+            <div className="flex flex-wrap items-center gap-2 md:gap-3">
               {/* Search */}
               <div className="min-w-[220px] flex-1">
                 <Label htmlFor="search" className="sr-only">
@@ -310,7 +343,6 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
 
               {/* Direction Filter */}
               <div className="flex items-center gap-2">
-                <Filter className="h-4 w-4 text-muted-foreground" />
                 <Label htmlFor="direction-filter" className="text-sm font-medium">
                   Direction
                 </Label>
@@ -327,6 +359,26 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
                     <SelectItem value="short">Short</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Top N Per Symbol Filter */}
+              <div className="flex items-center gap-2">
+                <Label htmlFor="top-n-filter" className="text-sm font-medium">
+                  Count
+                </Label>
+                <Input
+                  id="top-n-filter"
+                  type="number"
+                  min={0}
+                  placeholder="All"
+                  value={topNPerSymbol ?? ""}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setTopNPerSymbol(value === "" ? null : Math.max(0, parseInt(value, 10) || 0));
+                  }}
+                  className="w-[100px] h-10"
+                  aria-label="Number of latest signals per symbol"
+                />
               </div>
 
               {/* Multi-Sort Options */}

@@ -78,13 +78,13 @@ const VirtualizedRowRenderer = (props: VirtualizedRowProps) => (
 function SignalTableHeader() {
   return (
     <div
-      className="grid grid-cols-[150px_100px_80px_100px_100px_100px_100px_100px_100px_100px_120px_120px_80px_120px_100px] gap-4 items-center w-full border-b-2 border-border bg-muted/30 px-4 py-3 text-xs font-semibold text-muted-foreground uppercase sticky top-0 z-10 backdrop-blur-sm"
+      className="grid grid-cols-[120px_80px_50px_100px_100px_100px_100px_100px_100px_100px_120px_120px_80px_120px_80px] gap-4 items-center w-full border-b-2 border-border bg-muted/30 px-4 py-3 text-xs font-semibold text-muted-foreground uppercase sticky top-0 z-10 backdrop-blur-sm"
       role="rowheader"
       aria-label="Signal table header"
     >
-      <div>Symbol</div>
-      <div>Direction</div>
-      <div>Timeframe</div>
+      <div className="text-center">Symbol</div>
+      <div className="text-center">Direction</div>
+      <div className="text-center">Timeframe</div>
       <div className="text-center">Score</div>
       <div className="text-center">Current</div>
       <div className="text-center">Entry</div>
