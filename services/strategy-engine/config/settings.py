@@ -80,7 +80,7 @@ class StrategyConfig:
         self.tp3_fib_level = 0.236
         self.candle_counts_for_swing_high_low = 200
         self.sensible_window = 2
-        self.swing_window = 6
+        self.swing_window = 7
         self.swing_high_low_pruning_score = {
             'BTCUSDT': 0.015,
             'ETHUSDT': 0.015,
