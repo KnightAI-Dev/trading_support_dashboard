@@ -5,13 +5,11 @@ export type ConfluenceType = "OB" | "SR" | "RSI" | "CVD" | "FIB" | "Trend";
 
 export type IndicatorType = 
   | "RSI" 
-  | "MACD" 
   | "MA" 
   | "EMA" 
-  | "BB" 
-  | "Stochastic" 
   | "Volume"
-  | "SR";
+  | "SR"
+  | "ZigZag";
 
 export type IndicatorCategory = "Oscillators" | "Trend" | "Volume" | "Volatility";
 
@@ -31,7 +29,7 @@ export interface IndicatorDefinition {
   category: IndicatorCategory;
   description: string;
   defaultSettings: Record<string, any>;
-  requiresSeparatePane?: boolean; // RSI, MACD need separate panes
+  requiresSeparatePane?: boolean; // RSI needs separate pane
 }
 
 export const DEFAULT_SYMBOLS: Symbol[] = ["BTCUSDT", "ETHUSDT", "SOLUSDT"];

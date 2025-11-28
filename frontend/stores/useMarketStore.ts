@@ -48,6 +48,40 @@ interface MarketState {
   reset: () => void;
 }
 
+// Create default active indicators (RSI and Volume)
+const createDefaultIndicators = (): IndicatorConfig[] => {
+  const rsiDef = INDICATOR_REGISTRY.find((ind) => ind.type === "RSI");
+  const volumeDef = INDICATOR_REGISTRY.find((ind) => ind.type === "Volume");
+  
+  const defaultIndicators: IndicatorConfig[] = [];
+  
+  if (rsiDef) {
+    defaultIndicators.push({
+      id: `RSI-default-${Date.now()}`,
+      type: "RSI",
+      name: rsiDef.name,
+      category: rsiDef.category,
+      paneIndex: rsiDef.requiresSeparatePane ? undefined : 0,
+      settings: { ...rsiDef.defaultSettings },
+      visible: true,
+    });
+  }
+  
+  if (volumeDef) {
+    defaultIndicators.push({
+      id: `Volume-default-${Date.now()}`,
+      type: "Volume",
+      name: volumeDef.name,
+      category: volumeDef.category,
+      paneIndex: volumeDef.requiresSeparatePane ? undefined : 0,
+      settings: { ...volumeDef.defaultSettings },
+      visible: true,
+    });
+  }
+  
+  return defaultIndicators;
+};
+
 const defaultChartSettings: ChartSettings = {
   showFibs: false,  // Hide Fibs by default
   showOrderBlocks: false,  // Hide Order Blocks by default
@@ -60,7 +94,7 @@ const defaultChartSettings: ChartSettings = {
   showMA7: false,  // Hide MA(7) by default
   showMA25: false,  // Hide MA(25) by default
   showMA99: false,  // Hide MA(99) by default
-  activeIndicators: [], // Dynamic list of active indicators
+  activeIndicators: createDefaultIndicators(), // RSI and Volume shown by default
 };
 
 export const useMarketStore = createWithEqualityFn<MarketState>((set) => ({

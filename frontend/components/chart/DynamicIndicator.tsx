@@ -153,6 +153,95 @@ function calculateEMA(candles: Candle[], period: number): Array<{ time: Time; va
   return emaData;
 }
 
+/**
+ * Calculate ZigZag points
+ * Based on Pine Script ZigZag algorithm
+ */
+interface ZigZagPoint {
+  time: Time;
+  price: number;
+  isHigh: boolean;
+}
+
+function calculateZigZag(
+  candles: Candle[],
+  depth: number = 12,
+  deviation: number = 5,
+  backstep: number = 2
+): ZigZagPoint[] {
+  if (candles.length < depth + backstep) {
+    return [];
+  }
+
+  const points: ZigZagPoint[] = [];
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  const mintick = 0.01; // Minimum price movement (adjust based on your data)
+
+  // Find swing points
+  for (let i = depth; i < candles.length - backstep; i++) {
+    // Find highest bar in the depth range
+    let highestIdx = i - depth;
+    for (let j = i - depth + 1; j <= i; j++) {
+      if (highs[j] > highs[highestIdx]) {
+        highestIdx = j;
+      }
+    }
+
+    // Find lowest bar in the depth range
+    let lowestIdx = i - depth;
+    for (let j = i - depth + 1; j <= i; j++) {
+      if (lows[j] < lows[lowestIdx]) {
+        lowestIdx = j;
+      }
+    }
+
+    // Check if high meets deviation requirement
+    const highDeviation = highs[highestIdx] - highs[i - depth];
+    if (highDeviation > deviation * mintick && highestIdx === i) {
+      points.push({
+        time: (new Date(candles[highestIdx].timestamp).getTime() / 1000) as Time,
+        price: highs[highestIdx],
+        isHigh: true,
+      });
+    }
+
+    // Check if low meets deviation requirement
+    const lowDeviation = lows[i - depth] - lows[lowestIdx];
+    if (lowDeviation > deviation * mintick && lowestIdx === i) {
+      points.push({
+        time: (new Date(candles[lowestIdx].timestamp).getTime() / 1000) as Time,
+        price: lows[lowestIdx],
+        isHigh: false,
+      });
+    }
+  }
+
+  // Filter points to alternate between highs and lows
+  const filteredPoints: ZigZagPoint[] = [];
+  let lastWasHigh: boolean | null = null;
+
+  for (const point of points) {
+    if (lastWasHigh === null) {
+      filteredPoints.push(point);
+      lastWasHigh = point.isHigh;
+    } else if (point.isHigh !== lastWasHigh) {
+      filteredPoints.push(point);
+      lastWasHigh = point.isHigh;
+    } else {
+      // Replace the last point if this one is more extreme
+      const lastPoint = filteredPoints[filteredPoints.length - 1];
+      if (point.isHigh && point.price > lastPoint.price) {
+        filteredPoints[filteredPoints.length - 1] = point;
+      } else if (!point.isHigh && point.price < lastPoint.price) {
+        filteredPoints[filteredPoints.length - 1] = point;
+      }
+    }
+  }
+
+  return filteredPoints;
+}
+
 export function DynamicIndicator({
   chart,
   pane,
@@ -165,26 +254,33 @@ export function DynamicIndicator({
   const emaSeriesRefs = useRef<Map<number, ISeriesApi<"Line">>>(new Map());
 
   useEffect(() => {
-    if (!chart || !pane || !indicator.visible) {
+    // Cleanup function that will run on unmount or when dependencies change
+    const cleanup = () => {
       // Cleanup single series
-      if (seriesRef.current) {
+      if (seriesRef.current && chart) {
         try {
-          chart?.removeSeries(seriesRef.current);
+          chart.removeSeries(seriesRef.current);
         } catch (e) {
           // Series might already be removed
         }
         seriesRef.current = null;
       }
       // Cleanup EMA series
-      emaSeriesRefs.current.forEach((series) => {
-        try {
-          chart?.removeSeries(series);
-        } catch (e) {
-          // Series might already be removed
-        }
-      });
+      if (chart) {
+        emaSeriesRefs.current.forEach((series) => {
+          try {
+            chart.removeSeries(series);
+          } catch (e) {
+            // Series might already be removed
+          }
+        });
+      }
       emaSeriesRefs.current.clear();
-      return;
+    };
+
+    if (!chart || !pane || !indicator.visible) {
+      cleanup();
+      return cleanup;
     }
 
     const filteredCandles = candles
@@ -262,8 +358,91 @@ export function DynamicIndicator({
         }
       }
 
+      // Return cleanup function for EMA
       return () => {
-        // Cleanup is handled above
+        emaSeriesRefs.current.forEach((series) => {
+          try {
+            chart?.removeSeries(series);
+          } catch (e) {
+            // Series might already be removed
+          }
+        });
+        emaSeriesRefs.current.clear();
+      };
+    }
+
+    // Handle ZigZag indicator
+    if (indicator.type === "ZigZag") {
+      const depth = indicator.settings.depth || 12;
+      const deviation = indicator.settings.deviation || 5;
+      const backstep = indicator.settings.backstep || 2;
+      const lineWidth = indicator.settings.lineWidth || 2;
+      const upColor = indicator.settings.upColor || "#00e677";
+      const downColor = indicator.settings.downColor || "#ff5252";
+
+      if (filteredCandles.length < depth + backstep) {
+        return;
+      }
+
+      const zigzagPoints = calculateZigZag(filteredCandles, depth, deviation, backstep);
+      
+      if (zigzagPoints.length < 2) {
+        return;
+      }
+
+      // Remove existing ZigZag series
+      if (seriesRef.current) {
+        try {
+          chart.removeSeries(seriesRef.current);
+        } catch (e) {
+          // Series might already be removed
+        }
+        seriesRef.current = null;
+      }
+
+      // Create line data connecting consecutive ZigZag points
+      const lineData: LineData[] = [];
+      for (let i = 0; i < zigzagPoints.length; i++) {
+        lineData.push({
+          time: zigzagPoints[i].time,
+          value: zigzagPoints[i].price,
+        });
+      }
+
+      try {
+        // Create series for ZigZag lines
+        const zigzagSeries = pane.addSeries(LineSeries, {
+          color: upColor, // Will alternate colors based on direction
+          lineWidth: lineWidth as any,
+          title: "ZigZag",
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+
+        zigzagSeries.setData(lineData);
+        seriesRef.current = zigzagSeries;
+
+        // Set pane height if specified
+        if (indicator.settings.paneHeight !== undefined) {
+          try {
+            pane.setStretchFactor(indicator.settings.paneHeight);
+          } catch (error) {
+            console.warn(`DynamicIndicator: Error setting pane height for ZigZag`, error);
+          }
+        }
+      } catch (error) {
+        console.warn(`DynamicIndicator: Error creating ZigZag series`, error);
+      }
+
+      return () => {
+        if (seriesRef.current && chart) {
+          try {
+            chart.removeSeries(seriesRef.current);
+          } catch (e) {
+            // Series might already be removed or chart disposed
+          }
+          seriesRef.current = null;
+        }
       };
     }
 
