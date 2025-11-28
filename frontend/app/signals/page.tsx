@@ -25,14 +25,14 @@ function SignalsSkeleton() {
 export default async function SignalsPage({ searchParams }: SignalsPageProps) {
   const limit = parseInt(searchParams.limit || "5000", 10);
 
-  // Server-side fetch with caching
+  // Server-side fetch - disable caching for large requests to avoid 2MB cache limit
   const signals = await fetchSignals(
     {
       symbol: searchParams.symbol,
       direction: searchParams.direction,
       limit,
     },
-    { next: { revalidate: 30 } } // Cache for 30 seconds
+    limit > 1000 ? { cache: 'no-store' } : { next: { revalidate: 30 } }
   );
 
   return (

@@ -61,9 +61,15 @@ export async function fetchSignals(
   if (params?.direction) queryParams.append("direction", params.direction);
   if (params?.limit) queryParams.append("limit", params.limit.toString());
 
+  // Disable caching for large requests (>1000 signals) to avoid 2MB cache limit
+  const isLargeRequest = (params?.limit ?? 0) > 1000;
+  const fetchOptions = isLargeRequest 
+    ? { cache: 'no-store' as RequestCache } 
+    : buildFetchOptions(30, options);
+
   const signalsResponse = await fetch(
     `${API_URL}/signals?${queryParams}`,
-    buildFetchOptions(30, options)
+    fetchOptions
   );
 
   if (signalsResponse.ok) {
@@ -73,7 +79,7 @@ export async function fetchSignals(
 
   const fallbackResponse = await fetch(
     `${API_URL}/alerts?${queryParams}`,
-    buildFetchOptions(30, options)
+    fetchOptions
   );
 
   if (!fallbackResponse.ok) {
