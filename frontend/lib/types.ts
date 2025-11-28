@@ -10,7 +10,8 @@ export type IndicatorType =
   | "EMA" 
   | "BB" 
   | "Stochastic" 
-  | "Volume";
+  | "Volume"
+  | "SR";
 
 export type IndicatorCategory = "Oscillators" | "Trend" | "Volume" | "Volatility";
 

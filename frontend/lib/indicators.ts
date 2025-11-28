@@ -3,10 +3,10 @@ import { IndicatorDefinition } from "@/lib/types";
 export const INDICATOR_REGISTRY: IndicatorDefinition[] = [
   {
     type: "RSI",
-    name: "Relative Strength Index",
+    name: "RSI",
     category: "Oscillators",
     description: "Measures the speed and magnitude of price changes",
-    defaultSettings: { period: 14 },
+    defaultSettings: { period: 14, paneHeight: 10 },
     requiresSeparatePane: true,
   },
   {
@@ -29,8 +29,12 @@ export const INDICATOR_REGISTRY: IndicatorDefinition[] = [
     type: "EMA",
     name: "Exponential Moving Average",
     category: "Trend",
-    description: "Exponentially weighted moving average",
-    defaultSettings: { period: 20 },
+    description: "Exponentially weighted moving average (20, 50, 100, 200)",
+    defaultSettings: { 
+      periods: [20, 50, 100, 200],
+      colors: ["#3b82f6", "#f59e0b", "#8b5cf6", "#ef4444"], // Blue, Amber, Purple, Red
+      lineWidth: 1,
+    },
     requiresSeparatePane: false,
   },
   {
@@ -48,6 +52,22 @@ export const INDICATOR_REGISTRY: IndicatorDefinition[] = [
     description: "Compares closing price to price range",
     defaultSettings: { kPeriod: 14, dPeriod: 3 },
     requiresSeparatePane: true,
+  },
+  {
+    type: "Volume",
+    name: "Volume",
+    category: "Volume",
+    description: "Trading volume indicator",
+    defaultSettings: {},
+    requiresSeparatePane: false,
+  },
+  {
+    type: "SR",
+    name: "Support/Resistance",
+    category: "Trend",
+    description: "Support and resistance levels",
+    defaultSettings: {},
+    requiresSeparatePane: false,
   },
 ];
 

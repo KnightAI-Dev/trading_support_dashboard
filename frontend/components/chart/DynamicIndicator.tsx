@@ -108,6 +108,51 @@ function calculateMA(candles: Candle[], period: number): Array<{ time: Time; val
   return maData;
 }
 
+/**
+ * Calculate Simple Moving Average (helper for EMA initialization)
+ */
+function calculateSMA(closes: number[], period: number, startIndex: number): number {
+  let sum = 0;
+  for (let i = startIndex - period + 1; i <= startIndex; i++) {
+    sum += closes[i];
+  }
+  return sum / period;
+}
+
+/**
+ * Calculate Exponential Moving Average (EMA)
+ * Formula: EMA = alpha * x + (1 - alpha) * EMA[1]
+ * where alpha = 2 / (length + 1)
+ * First value uses SMA(src, length)
+ */
+function calculateEMA(candles: Candle[], period: number): Array<{ time: Time; value: number }> {
+  if (candles.length < period) {
+    return [];
+  }
+
+  const emaData: Array<{ time: Time; value: number }> = [];
+  const closes = candles.map(c => c.close);
+  const alpha = 2 / (period + 1);
+  
+  // First EMA value is SMA
+  let ema = calculateSMA(closes, period, period - 1);
+  emaData.push({
+    time: (new Date(candles[period - 1].timestamp).getTime() / 1000) as Time,
+    value: ema,
+  });
+
+  // Calculate subsequent EMA values
+  for (let i = period; i < closes.length; i++) {
+    ema = alpha * closes[i] + (1 - alpha) * ema;
+    emaData.push({
+      time: (new Date(candles[i].timestamp).getTime() / 1000) as Time,
+      value: ema,
+    });
+  }
+
+  return emaData;
+}
+
 export function DynamicIndicator({
   chart,
   pane,
@@ -117,9 +162,11 @@ export function DynamicIndicator({
   indicator,
 }: DynamicIndicatorProps) {
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const emaSeriesRefs = useRef<Map<number, ISeriesApi<"Line">>>(new Map());
 
   useEffect(() => {
     if (!chart || !pane || !indicator.visible) {
+      // Cleanup single series
       if (seriesRef.current) {
         try {
           chart?.removeSeries(seriesRef.current);
@@ -128,6 +175,15 @@ export function DynamicIndicator({
         }
         seriesRef.current = null;
       }
+      // Cleanup EMA series
+      emaSeriesRefs.current.forEach((series) => {
+        try {
+          chart?.removeSeries(series);
+        } catch (e) {
+          // Series might already be removed
+        }
+      });
+      emaSeriesRefs.current.clear();
       return;
     }
 
@@ -135,9 +191,85 @@ export function DynamicIndicator({
       .filter((c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe)
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
+    // Handle EMA with multiple periods
+    if (indicator.type === "EMA") {
+      const periods = indicator.settings.periods || [20, 50, 100, 200];
+      const colors = indicator.settings.colors || ["#3b82f6", "#f59e0b", "#8b5cf6", "#ef4444"]; // Blue, Amber, Purple, Red
+      
+      // Remove old EMA series that are no longer needed
+      const currentPeriods = new Set(periods);
+      emaSeriesRefs.current.forEach((series, period) => {
+        if (!currentPeriods.has(period)) {
+          try {
+            chart.removeSeries(series);
+          } catch (e) {
+            // Series might already be removed
+          }
+          emaSeriesRefs.current.delete(period);
+        }
+      });
+
+      // Create/update EMA series for each period
+      periods.forEach((period: number, index: number) => {
+        if (filteredCandles.length < period) {
+          // Not enough data, remove series if it exists
+          const existingSeries = emaSeriesRefs.current.get(period);
+          if (existingSeries) {
+            try {
+              chart.removeSeries(existingSeries);
+            } catch (e) {
+              // Series might already be removed
+            }
+            emaSeriesRefs.current.delete(period);
+          }
+          return;
+        }
+
+        const emaData = calculateEMA(filteredCandles, period);
+        if (emaData.length === 0) return;
+
+        let series = emaSeriesRefs.current.get(period);
+        
+        if (!series) {
+          // Create new series
+          try {
+            series = pane.addSeries(LineSeries, {
+              color: colors[index] || colors[0],
+              lineWidth: indicator.settings.lineWidth || 1,
+              title: `EMA(${period})`,
+            });
+            emaSeriesRefs.current.set(period, series);
+          } catch (error) {
+            console.warn(`DynamicIndicator: Error creating EMA(${period}) series`, error);
+            return;
+          }
+        }
+
+        // Update series data
+        try {
+          series.setData(emaData as LineData[]);
+        } catch (error) {
+          console.warn(`DynamicIndicator: Error setting EMA(${period}) data`, error);
+        }
+      });
+
+      // Set pane height if specified
+      if (indicator.settings.paneHeight !== undefined) {
+        try {
+          pane.setStretchFactor(indicator.settings.paneHeight);
+        } catch (error) {
+          console.warn(`DynamicIndicator: Error setting pane height for EMA`, error);
+        }
+      }
+
+      return () => {
+        // Cleanup is handled above
+      };
+    }
+
+    // Handle other indicator types (RSI, MA, etc.)
     let indicatorData: Array<{ time: Time; value: number }> = [];
 
-    // Calculate indicator data based on type
     switch (indicator.type) {
       case "RSI":
         if (filteredCandles.length < (indicator.settings.period || 14) + 1) {
@@ -184,6 +316,15 @@ export function DynamicIndicator({
         lineWidth: indicator.settings.lineWidth || 2,
         title: indicator.name,
       });
+
+      // Set pane height if specified in settings
+      if (indicator.settings.paneHeight !== undefined) {
+        try {
+          pane.setStretchFactor(indicator.settings.paneHeight);
+        } catch (error) {
+          console.warn(`DynamicIndicator: Error setting pane height for ${indicator.type}`, error);
+        }
+      }
 
       // Configure price scale for RSI (0-100 range)
       if (indicator.type === "RSI") {

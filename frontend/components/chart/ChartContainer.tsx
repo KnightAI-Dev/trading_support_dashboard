@@ -18,13 +18,8 @@ import { useMarketStore } from "@/stores/useMarketStore";
 import { shallow } from "zustand/shallow";
 import { Candle, fetchCandles } from "@/lib/api";
 import { SwingMarkers } from "./SwingMarkers";
-import { FibonacciOverlay } from "./FibonacciOverlay";
-import { OrderBlockOverlay } from "./OrderBlockOverlay";
-import { SupportResistanceLines } from "./SupportResistanceLines";
 import { EntrySlTpLines } from "./EntrySlTpLines";
-import { RSIIndicator } from "./RSIIndicator";
 import { CandleTooltip } from "./CandleTooltip";
-import { MovingAverages } from "./MovingAverages";
 import { DynamicIndicator } from "./DynamicIndicator";
 import { Loader2 } from "lucide-react";
 import { INDICATOR_REGISTRY } from "@/lib/indicators";
@@ -50,8 +45,6 @@ export function ChartContainer({
   const loadMoreTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const prevCandlesRef = useRef<Candle[]>([]);
   const pricePaneRef = useRef<IPaneApi<Time> | null>(null);
-  const rsiPaneRef = useRef<IPaneApi<Time> | null>(null);
-  const [rsiPaneState, setRsiPaneState] = useState<IPaneApi<Time> | null>(null);
   // Map to track panes for indicators that need separate panes
   const indicatorPanesRef = useRef<Map<string, IPaneApi<Time>>>(new Map());
   const [indicatorPanes, setIndicatorPanes] = useState<Map<string, IPaneApi<Time>>>(new Map());
@@ -145,30 +138,12 @@ export function ChartContainer({
       wickDownColor: "#ef4444",
     });
 
-    // Add volume histogram series below candlesticks
-    const volumeSeries = chart.addSeries(HistogramSeries, {
-      color: "#26a69a",
-      priceFormat: {
-        type: "volume",
-      },
-      priceScaleId: "", // Use separate price scale
-      // Make volume bars less prominent
-      baseLineVisible: false,
-      priceLineVisible: false,
-      lastValueVisible: false,
-    });
-
-    // Configure the volume price scale to make it small and position it at the bottom
-    volumeSeries.priceScale().applyOptions({
-      scaleMargins: {
-        top: 0.9, // Make volume chart very small (96% top margin = volume takes ~4% of space)
-        bottom: 0.01, // Minimal bottom margin to keep it at the bottom
-      },
-    });
+    // Volume series will be created/removed based on Volume indicator selection
+    // Don't create it here - it will be managed by the Volume indicator effect
 
     chartRef.current = chart;
     seriesRef.current = candlestickSeries;
-    volumeSeriesRef.current = volumeSeries;
+    volumeSeriesRef.current = null; // Will be set when Volume indicator is active
     pricePaneRef.current = chart.panes()[0] ?? null;
     setIsChartReady(true);
 
@@ -236,8 +211,6 @@ export function ChartContainer({
       seriesRef.current = null;
       volumeSeriesRef.current = null;
       pricePaneRef.current = null;
-      rsiPaneRef.current = null;
-      setRsiPaneState(null);
       // Dispose chart
       try {
         chart.remove();
@@ -247,56 +220,6 @@ export function ChartContainer({
       }
     };
   }, []); // Run only once on mount
-
-  // Manage RSI pane creation/removal and sizing
-  useEffect(() => {
-    if (!isChartReady || !chartRef.current || !pricePaneRef.current) return;
-
-    const chart = chartRef.current;
-    const pricePane = pricePaneRef.current;
-    const desiredHeight = Math.min(Math.max(chartSettings.rsiHeight ?? 30, 10), 60);
-
-    if (chartSettings.showRSI) {
-      let pane = rsiPaneRef.current;
-      if (!pane) {
-        try {
-          pane = chart.addPane();
-          pane.setPreserveEmptyPane(true);
-          rsiPaneRef.current = pane;
-          setRsiPaneState(pane);
-        } catch (error) {
-          console.warn("ChartContainer: Error adding RSI pane", error);
-          return;
-        }
-      }
-      if (!pane) return;
-
-      const priceStretch = Math.max(1, 100 - desiredHeight);
-      const rsiStretch = Math.max(1, desiredHeight);
-
-      try {
-        pricePane.setStretchFactor(priceStretch);
-        pane.setStretchFactor(rsiStretch);
-      } catch (error) {
-        console.warn("ChartContainer: Error adjusting pane sizes", error);
-      }
-    } else if (rsiPaneRef.current) {
-      const paneIndex = rsiPaneRef.current.paneIndex();
-      try {
-        chart.removePane(paneIndex);
-      } catch (error) {
-        console.warn("ChartContainer: Error removing RSI pane", error);
-      }
-      rsiPaneRef.current = null;
-      setRsiPaneState(null);
-
-      try {
-        pricePane.setStretchFactor(1);
-      } catch (error) {
-        console.warn("ChartContainer: Error resetting pane size", error);
-      }
-    }
-  }, [chartSettings.showRSI, chartSettings.rsiHeight, isChartReady]);
 
   // Manage panes for dynamic indicators that need separate panes
   useEffect(() => {
@@ -361,6 +284,68 @@ export function ChartContainer({
       console.warn("ChartContainer: Error adjusting pane sizes", error);
     }
   }, [isChartReady, chartSettings.activeIndicators]);
+
+  // Manage Volume series creation/removal based on Volume indicator
+  useEffect(() => {
+    if (!isChartReady || !chartRef.current) return;
+
+    const chart = chartRef.current;
+    const activeIndicators = chartSettings.activeIndicators || [];
+    const volumeIndicator = activeIndicators.find(
+      (ind) => ind.type === "Volume" && ind.visible
+    );
+
+    if (volumeIndicator && !volumeSeriesRef.current) {
+      // Create volume series
+      try {
+        const volumeSeries = chart.addSeries(HistogramSeries, {
+          color: "#26a69a",
+          priceFormat: {
+            type: "volume",
+          },
+          priceScaleId: "", // Use separate price scale
+          baseLineVisible: false,
+          priceLineVisible: false,
+          lastValueVisible: false,
+        });
+
+        // Configure the volume price scale to make it small and position it at the bottom
+        volumeSeries.priceScale().applyOptions({
+          scaleMargins: {
+            top: 0.9, // Make volume chart very small (90% top margin = volume takes ~10% of space)
+            bottom: 0.01, // Minimal bottom margin to keep it at the bottom
+          },
+        });
+
+        volumeSeriesRef.current = volumeSeries;
+
+        // Immediately populate volume data if we have candles
+        const filteredCandles = currentCandles
+          .filter((c) => c.symbol === selectedSymbol && c.timeframe === selectedTimeframe)
+          .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        if (filteredCandles.length > 0) {
+          const volumeData: HistogramData[] = filteredCandles.map((candle) => ({
+            time: (new Date(candle.timestamp).getTime() / 1000) as Time,
+            value: candle.volume,
+            color: candle.close >= candle.open ? "#10b98180" : "#ef444480", // Green/red with 50% opacity
+          }));
+          volumeSeries.setData(volumeData);
+        }
+      } catch (error) {
+        console.warn("ChartContainer: Error creating volume series", error);
+      }
+    } else if (!volumeIndicator && volumeSeriesRef.current) {
+      // Remove volume series
+      try {
+        chart.removeSeries(volumeSeriesRef.current);
+        volumeSeriesRef.current = null;
+      } catch (error) {
+        console.warn("ChartContainer: Error removing volume series", error);
+        volumeSeriesRef.current = null;
+      }
+    }
+  }, [isChartReady, chartSettings.activeIndicators, currentCandles, selectedSymbol, selectedTimeframe]);
 
   // Reflect width prop changes without recreating the chart
   useEffect(() => {
@@ -888,19 +873,6 @@ export function ChartContainer({
         />
       )}
 
-      {/* Show RSI indicator */}
-      {chartSettings.showRSI && (
-        <RSIIndicator
-          chart={chartApi}
-          pane={rsiPaneState}
-          candles={currentCandles}
-          selectedSymbol={selectedSymbol}
-          selectedTimeframe={selectedTimeframe}
-          period={14}
-          height={chartSettings.rsiHeight}
-        />
-      )}
-
       {/* Candle Tooltip */}
       {chartSettings.showTooltip && (
         <CandleTooltip
@@ -911,17 +883,6 @@ export function ChartContainer({
           selectedTimeframe={selectedTimeframe}
         />
       )}
-
-      {/* Moving Averages */}
-      <MovingAverages
-        chart={chartApi}
-        candles={currentCandles}
-        selectedSymbol={selectedSymbol}
-        selectedTimeframe={selectedTimeframe}
-        showMA7={chartSettings.showMA7}
-        showMA25={chartSettings.showMA25}
-        showMA99={chartSettings.showMA99}
-      />
 
       {/* Dynamic Indicators */}
       {(chartSettings.activeIndicators || []).map((indicator) => {
