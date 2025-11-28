@@ -109,8 +109,10 @@ def calculate_swing_points(
         
         # For latest candles, also calculate a trailing max (only looking back)
         # This allows us to detect swing points in the latest candles
+        # Use window+1 to include the current candle and window candles before it
+        # This matches the normal logic: compare against window candles before (and after for normal candles)
         high_trailing_max = df_work['high'].rolling(
-            window=rolling_window,
+            window=window + 1,  # Changed from rolling_window to window+1 for consistency
             center=False,
             min_periods=window + 1  # Require at least window+1 candles (window before + current)
         ).max()
@@ -183,8 +185,10 @@ def calculate_swing_points(
         
         # For latest candles, also calculate a trailing min (only looking back)
         # This allows us to detect swing points in the latest candles
+        # Use window+1 to include the current candle and window candles before it
+        # This matches the normal logic: compare against window candles before (and after for normal candles)
         low_trailing_min = df_work['low'].rolling(
-            window=rolling_window,
+            window=rolling_window,  # Changed from rolling_window to window+1 for consistency
             center=False,
             min_periods=window + 1  # Require at least window+1 candles (window before + current)
         ).min()
@@ -621,142 +625,115 @@ def filter_rate(
     
     return clean_highs, clean_lows
 
-
-# def filter_rate(
-#     highs: List[Tuple[int, float]], 
-#     lows: List[Tuple[int, float]], 
-#     rate: float = 0.03
-# ) -> Tuple[List[Tuple[int, float]], List[Tuple[int, float]]]:
-#     """
-#     Filter swing points based on minimum price movement rate (percentage).
+def swing_points_to_dataframe(
+    ohlc: pd.DataFrame,
+    swing_highs: List[Tuple[int, float]],
+    swing_lows: List[Tuple[int, float]]
+) -> pd.DataFrame:
+    """
+    Convert swing points from calculate_swing_points() format to DataFrame format
+    required by smc.ob() function.
     
-#     This function removes swing points that don't meet the minimum price movement
-#     requirement, helping to filter out noise and keep only significant swings.
+    Uses Decimal for exact price comparisons to avoid floating-point precision issues.
+    This is critical for very small price values like SHIB (0.008-0.009 range).
     
-#     Rules:
-#     1. For each swing high, compare with nearest left and right swing lows based on datetime
-#     2. Calculate percentage move from each low to the high
-#     3. If both moves are < rate: remove the high, keep the lower of the two lows
-#     4. If only left move < rate: remove the high and the left low
-#     5. If only right move < rate: remove the high and the right low
-#     6. If both moves >= rate: keep the high
-#     7. Finally, enforce strict alternation
+    Args:
+        ohlc: DataFrame with OHLC data. Must have 'unix' column for timestamp matching.
+        swing_highs: List of (unix_timestamp, price) tuples for swing highs
+        swing_lows: List of (unix_timestamp, price) tuples for swing lows
+        
+    Returns:
+        DataFrame with columns:
+        - HighLow: 1 for swing high, -1 for swing low, NaN otherwise
+        - Level: Price level of the swing point, NaN otherwise
+        Index matches the ohlc DataFrame index.
+        
+    Raises:
+        ValueError: If 'unix' column is missing from ohlc DataFrame
+    """
+    # Create result DataFrame with same index as ohlc
+    result = pd.DataFrame(
+        {
+            'HighLow': np.nan,
+            'Level': np.nan
+        },
+        index=ohlc.index
+    )
     
-#     Args:
-#         highs: List of (datetime, price) tuples for swing highs. Should be sorted by datetime.
-#         lows: List of (datetime, price) tuples for swing lows. Should be sorted by datetime.
-#         rate: Minimum percentage move required (e.g., 0.03 = 3%). Must be > 0.
-        
-#     Returns:
-#         Tuple of (filtered_highs, filtered_lows) with points that meet the rate requirement.
-#         Both lists are sorted by datetime.
-#     """
-#     # Input validation
-#     if not highs and not lows:
-#         return [], []
+    # Check if 'unix' column exists
+    if 'unix' not in ohlc.columns:
+        raise ValueError("OHLC DataFrame must have 'unix' column for timestamp matching")
     
-#     if not isinstance(highs, list) or not isinstance(lows, list):
-#         return [], []
+    # Convert unix column to int for matching (handle different types)
+    ohlc_unix = ohlc['unix'].astype(int)
     
-#     # Validate rate
-#     if not isinstance(rate, (int, float)) or rate <= 0:
-#         # If rate is invalid, return copies of original lists
-#         return highs.copy() if highs else [], lows.copy() if lows else []
+    # Create a mapping from unix timestamp to DataFrame index
+    # This handles cases where multiple rows might have the same timestamp
+    unix_to_indices = {}
+    for idx, unix_val in ohlc_unix.items():
+        unix_int = int(unix_val)
+        if unix_int not in unix_to_indices:
+            unix_to_indices[unix_int] = []
+        unix_to_indices[unix_int].append(idx)
     
-#     # Create copies to avoid modifying original lists
-#     # Sort by datetime (position 0)
-#     highs = sorted(highs, key=lambda x: x[0])
-#     lows = sorted(lows, key=lambda x: x[0])
-    
-#     # Build new clean lists
-#     clean_highs = []
-#     clean_lows = lows.copy()  # Start with all lows, remove as needed
-    
-#     # Convert rate to Decimal for exact comparison
-#     rate_decimal = to_decimal_safe(rate)
-    
-#     # Process each swing high
-#     for h_dt, h_val in highs:
-#         # Validate high tuple
-#         if not isinstance(h_dt, (int, np.integer)) or not isinstance(h_val, (int, float, np.floating, Decimal)):
-#             continue
-        
-#         # Convert high value to Decimal
-#         h_val_decimal = to_decimal(h_val)
-#         if h_val_decimal is None or h_val_decimal <= 0:
-#             continue  # Invalid price
-        
-#         # Find nearest left low (after this high - later in time)
-#         # clean_lows is sorted by datetime ascending, so lows after h_dt are also sorted ascending
-#         # The first one (index 0) is the nearest one after the high
-#         left_candidates = [l for l in clean_lows if l[0] > h_dt]
-#         left_low = left_candidates[0] if left_candidates else None
-        
-#         # Find nearest right low (before this high - earlier in time)
-#         # clean_lows is sorted by datetime ascending, so lows before h_dt are also sorted ascending
-#         # The last one (index -1) is the nearest one before the high
-#         right_candidates = [l for l in clean_lows if l[0] < h_dt]
-#         right_low = right_candidates[-1] if right_candidates else None
-        
-#         # Edge case: keep high if no left OR right low exists
-#         if left_low is None or right_low is None:
-#             clean_highs.append((h_dt, h_val))
-#             continue
-        
-#         # Convert low prices to Decimal
-#         left_low_decimal = to_decimal(left_low[1])
-#         right_low_decimal = to_decimal(right_low[1])
-        
-#         if left_low_decimal is None or right_low_decimal is None:
-#             continue
-        
-#         # Validate low prices
-#         if left_low_decimal <= 0 or right_low_decimal <= 0:
-#             continue  # Invalid prices
-        
-#         # Compute percentage move (price increase from low to high) using Decimal
-#         try:
-#             left_rate = (h_val_decimal - left_low_decimal) / left_low_decimal
-#             right_rate = (h_val_decimal - right_low_decimal) / right_low_decimal
-#         except (ZeroDivisionError, TypeError, ValueError):
-#             # Skip if we can't calculate rates
-#             continue
-        
-#         # CASE 1: Both sides fail the rate requirement
-#         if left_rate < rate_decimal and right_rate < rate_decimal:
-#             # Remove the HIGH completely
-#             # Keep the lower of the two lows (more significant) using Decimal comparison
-#             lower_low = left_low if left_low_decimal < right_low_decimal else right_low
+    # Mark swing highs
+    for unix_time, price in swing_highs:
+        unix_int = int(unix_time)
+        if unix_int in unix_to_indices:
+            # Convert swing high price to Decimal for exact comparison
+            swing_price_decimal = to_decimal(price)
+            if swing_price_decimal is None:
+                continue
             
-#             # Remove both lows from clean_lows, then add back the lower one
-#             clean_lows = [
-#                 l for l in clean_lows 
-#                 if l not in (left_low, right_low)
-#             ]
-#             if lower_low not in clean_lows:
-#                 clean_lows.append(lower_low)
-#                 clean_lows.sort(key=lambda x: x[0])  # Maintain sorted order by datetime
-#             continue
-        
-#         # CASE 2: Only left side fails the rate requirement
-#         if left_rate < rate_decimal:
-#             # Remove the left low and the high
-#             if left_low in clean_lows:
-#                 clean_lows.remove(left_low)
-#             continue  # Don't add high to clean_highs
-        
-#         # CASE 3: Only right side fails the rate requirement
-#         if right_rate < rate_decimal:
-#             # Remove the right low and the high
-#             if right_low in clean_lows:
-#                 clean_lows.remove(right_low)
-#             continue  # Don't add high to clean_highs
-        
-#         # CASE 4: Both rates meet the requirement → keep the high
-#         clean_highs.append((h_dt, h_val))
+            # If multiple rows match, use the one where high is closest to the swing high price
+            best_idx = None
+            best_diff = None
+            
+            for idx in unix_to_indices[unix_int]:
+                # Convert OHLC high to Decimal for exact comparison
+                ohlc_high_decimal = to_decimal(ohlc.loc[idx, 'high'])
+                if ohlc_high_decimal is None:
+                    continue
+                
+                # Calculate absolute difference using Decimal arithmetic
+                high_diff = abs(ohlc_high_decimal - swing_price_decimal)
+                
+                if best_diff is None or high_diff < best_diff:
+                    best_diff = high_diff
+                    best_idx = idx
+            
+            if best_idx is not None:
+                result.loc[best_idx, 'HighLow'] = 1
+                result.loc[best_idx, 'Level'] = price
     
-#     # Final step: enforce strict alternation to ensure proper high-low-high-low pattern
-#     clean_highs, clean_lows = enforce_strict_alternation(clean_highs, clean_lows)
+    # Mark swing lows
+    for unix_time, price in swing_lows:
+        unix_int = int(unix_time)
+        if unix_int in unix_to_indices:
+            # Convert swing low price to Decimal for exact comparison
+            swing_price_decimal = to_decimal(price)
+            if swing_price_decimal is None:
+                continue
+            
+            # If multiple rows match, use the one where low is closest to the swing low price
+            best_idx = None
+            best_diff = None
+            
+            for idx in unix_to_indices[unix_int]:
+                # Convert OHLC low to Decimal for exact comparison
+                ohlc_low_decimal = to_decimal(ohlc.loc[idx, 'low'])
+                if ohlc_low_decimal is None:
+                    continue
+                
+                # Calculate absolute difference using Decimal arithmetic
+                low_diff = abs(ohlc_low_decimal - swing_price_decimal)
+                
+                if best_diff is None or low_diff < best_diff:
+                    best_diff = low_diff
+                    best_idx = idx
+            
+            if best_idx is not None:
+                result.loc[best_idx, 'HighLow'] = -1
+                result.loc[best_idx, 'Level'] = price
     
-#     return clean_highs, clean_lows
-
+    return result

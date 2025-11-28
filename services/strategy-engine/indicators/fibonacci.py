@@ -110,11 +110,6 @@ def calculate_fibonacci_levels(
                 # Since valid_highs is sorted, we can break once we pass the low datetime
                 break
         
-        # Initialize Fibonacci levels
-        fib_bear_level = None
-        fib_bull_lower_level = None
-        fib_bull_higher_level = None
-        
         # Calculate Bullish Fibonacci levels (extension from low to right high)
         if right_high is not None:
             rh_dt, rh_price = right_high
@@ -129,21 +124,28 @@ def calculate_fibonacci_levels(
                     # Use Decimal for exact arithmetic
                     price_diff = rh_price_decimal - low_price_decimal
                     
-                    # Convert config values to Decimal
+                    # Convert config value to Decimal
                     bull_lower_factor = to_decimal_safe(config.bullish_fib_level_lower)
-                    bull_higher_factor = to_decimal_safe(config.bullish_fib_level_higher)
                     
-                    # Calculate bullish extension levels using Decimal
+                    # Calculate bullish extension level using Decimal
                     fib_bull_lower_decimal = rh_price_decimal - price_diff * bull_lower_factor
-                    fib_bull_higher_decimal = rh_price_decimal - price_diff * bull_higher_factor
                     
-                    # Ensure fib levels are above the low (safety check using Decimal)
+                    # Ensure fib level is above the low (safety check using Decimal)
                     fib_bull_lower_decimal = max(low_price_decimal, fib_bull_lower_decimal)
-                    fib_bull_higher_decimal = max(low_price_decimal, fib_bull_higher_decimal)
                     
                     # Convert back to float for return value
                     fib_bull_lower_level = float(fib_bull_lower_decimal)
-                    fib_bull_higher_level = float(fib_bull_higher_decimal)
+                    
+                    # Create FibResult for bull
+                    output.append(
+                        FibResult(
+                            timeframe=timeframe,
+                            swing_low=(low_dt, low_price),
+                            swing_high=(rh_dt, rh_price),
+                            fib_level=fib_bull_lower_level,
+                            fib_type="bull"
+                        )
+                    )
                 except (TypeError, ValueError, OverflowError):
                     # Skip if calculation fails
                     pass
@@ -173,22 +175,20 @@ def calculate_fibonacci_levels(
                     
                     # Convert back to float for return value
                     fib_bear_level = float(fib_bear_decimal)
+                    
+                    # Create separate FibResult for bear
+                    output.append(
+                        FibResult(
+                            timeframe=timeframe,
+                            swing_low=(low_dt, low_price),
+                            swing_high=(lh_dt, lh_price),
+                            fib_level=fib_bear_level,
+                            fib_type="bear"
+                        )
+                    )
                 except (TypeError, ValueError, OverflowError):
                     # Skip if calculation fails
                     pass
-        
-        # Build dataclass result
-        output.append(
-            FibResult(
-                timeframe=timeframe,
-                low_center=(low_dt, low_price),  # (datetime, price)
-                left_high=left_high,  # (datetime, price) or None
-                right_high=right_high,  # (datetime, price) or None
-                fib_bear_level=float(fib_bear_level) if fib_bear_level is not None else None,
-                fib_bull_lower=float(fib_bull_lower_level) if fib_bull_lower_level is not None else None,
-                fib_bull_higher=float(fib_bull_higher_level) if fib_bull_higher_level is not None else None,
-            )
-        )
     
     return output
 

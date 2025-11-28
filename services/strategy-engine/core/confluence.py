@@ -61,9 +61,8 @@ class ConfluenceAnalyzer:
             timeframe_keys[normalized_key] = key
         
         for fib_level in fib_levels:
-            fib_bear_level = fib_level.fib_bear_level
-            fib_bull_lower_level = fib_level.fib_bull_lower
-            fib_bull_higher_level = fib_level.fib_bull_higher
+            # Get the single fib level from the new structure
+            fib_level_price = fib_level.fib_level
 
             # Track matches for each timeframe
             timeframe_matches = {}
@@ -91,44 +90,20 @@ class ConfluenceAnalyzer:
                 sup_res_prices = [p for _, p in support] + [p for _, p in resistance]
                 sup_res_prices_sorted = sorted(sup_res_prices)
                 
-                # Check if any Fibonacci level matches using Decimal for exact comparison
+                # Check if Fibonacci level matches using Decimal for exact comparison
                 is_matched = False
                 
                 # Convert tolerance to Decimal
                 tolerance_decimal = to_decimal_safe(self.config.swing_sup_res_tolerance_pct)
                 
-                # Check bearish Fibonacci level using Decimal
-                if not is_matched and fib_bear_level is not None:
-                    fib_bear_decimal = to_decimal(fib_bear_level)
-                    if fib_bear_decimal is not None:
+                # Check Fibonacci level using Decimal
+                if fib_level_price is not None:
+                    fib_level_decimal = to_decimal(fib_level_price)
+                    if fib_level_decimal is not None:
                         for sup_res_price in sup_res_prices_sorted:
                             sup_res_decimal = to_decimal(sup_res_price)
                             if sup_res_decimal is not None:
-                                rel_diff = decimal_relative_diff(fib_bear_decimal, sup_res_decimal)
-                                if rel_diff is not None and rel_diff <= tolerance_decimal:
-                                    is_matched = True
-                                    break
-                
-                # Check bullish Fibonacci lower level using Decimal
-                if not is_matched and fib_bull_lower_level is not None:
-                    fib_bull_lower_decimal = to_decimal(fib_bull_lower_level)
-                    if fib_bull_lower_decimal is not None:
-                        for sup_res_price in sup_res_prices_sorted:
-                            sup_res_decimal = to_decimal(sup_res_price)
-                            if sup_res_decimal is not None:
-                                rel_diff = decimal_relative_diff(fib_bull_lower_decimal, sup_res_decimal)
-                                if rel_diff is not None and rel_diff <= tolerance_decimal:
-                                    is_matched = True
-                                    break
-                
-                # Check bullish Fibonacci higher level using Decimal
-                if not is_matched and fib_bull_higher_level is not None:
-                    fib_bull_higher_decimal = to_decimal(fib_bull_higher_level)
-                    if fib_bull_higher_decimal is not None:
-                        for sup_res_price in sup_res_prices_sorted:
-                            sup_res_decimal = to_decimal(sup_res_price)
-                            if sup_res_decimal is not None:
-                                rel_diff = decimal_relative_diff(fib_bull_higher_decimal, sup_res_decimal)
+                                rel_diff = decimal_relative_diff(fib_level_decimal, sup_res_decimal)
                                 if rel_diff is not None and rel_diff <= tolerance_decimal:
                                     is_matched = True
                                     break
@@ -145,12 +120,10 @@ class ConfluenceAnalyzer:
 
                 confirmed_level = ConfirmedFibResult(
                     timeframe=fib_level.timeframe,
-                    low_center=fib_level.low_center,
-                    left_high=fib_level.left_high,
-                    right_high=fib_level.right_high,
-                    fib_bear_level=fib_level.fib_bear_level,
-                    fib_bull_lower=fib_level.fib_bull_lower,
-                    fib_bull_higher=fib_level.fib_bull_higher,
+                    swing_low=fib_level.swing_low,
+                    swing_high=fib_level.swing_high,
+                    fib_level=fib_level.fib_level,
+                    fib_type=fib_level.fib_type,
                     match_4h=timeframe_matches.get("4h", False),
                     match_1h=timeframe_matches.get("1h", False),
                     match_both=(

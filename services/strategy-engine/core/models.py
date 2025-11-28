@@ -9,12 +9,10 @@ from typing import List, Dict, Tuple, Optional
 class FibResult:
     """Container for raw Fibonacci calculations derived from swing points."""
     timeframe: str
-    low_center: Tuple[int, float]  # (datetime, price)
-    left_high: Optional[Tuple[int, float]] = None  # (datetime, price) - earlier in time
-    right_high: Optional[Tuple[int, float]] = None  # (datetime, price) - later in time
-    fib_bear_level: Optional[float] = None
-    fib_bull_lower: Optional[float] = None
-    fib_bull_higher: Optional[float] = None
+    swing_low: Tuple[int, float]  # (datetime, price)
+    swing_high: Tuple[int, float]  # (datetime, price)
+    fib_level: float  # Fibonacci level price
+    fib_type: str  # Type of Fibonacci level: "bear", "bull"
 
 
 @dataclass
