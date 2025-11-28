@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   IChartApi,
   ISeriesApi,
@@ -9,8 +9,7 @@ import {
   Time,
   createSeriesMarkers,
 } from "lightweight-charts";
-import { SwingPoint } from "@/lib/api";
-import { Candle } from "@/lib/api";
+import { SwingPoint, Candle } from "@/lib/api";
 
 interface SwingMarkersProps {
   chart: IChartApi | null;
@@ -19,6 +18,9 @@ interface SwingMarkersProps {
   candles: Candle[];
 }
 
+const MATCH_TOLERANCE_MS = 60 * 1000; // 1 minute window
+const MAX_SWING_MARKERS = 400;
+
 export function SwingMarkers({
   chart,
   series,
@@ -26,6 +28,24 @@ export function SwingMarkers({
   candles,
 }: SwingMarkersProps) {
   const markersPluginRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
+
+  const preparedCandles = useMemo(() => {
+    if (!candles.length) return [];
+    return candles.map((candle) => ({
+      candle,
+      timeMs: new Date(candle.timestamp).getTime(),
+    }));
+  }, [candles]);
+
+  const preparedSwings = useMemo(() => {
+    if (!swings.length) return [];
+    // swings are already sorted ascending in store, keep only the latest subset to reduce work
+    const startIndex = Math.max(0, swings.length - MAX_SWING_MARKERS);
+    return swings.slice(startIndex).map((swing) => ({
+      swing,
+      timeMs: new Date(swing.timestamp).getTime(),
+    }));
+  }, [swings]);
 
   // Attach/detach the series markers plugin as the series changes
   useEffect(() => {
@@ -64,35 +84,48 @@ export function SwingMarkers({
       return;
     }
 
-    // Clear markers if prerequisites are missing
-    if (!swings.length || !candles.length) {
+    if (!preparedSwings.length || !preparedCandles.length) {
       plugin.setMarkers([]);
       return;
     }
 
-    const markers = swings
-      .map((swing) => {
-        const candle = candles.find(
-          (c) =>
-            Math.abs(new Date(c.timestamp).getTime() - new Date(swing.timestamp).getTime()) < 60000
-        );
+    const markers: SeriesMarker<Time>[] = [];
+    let candleIndex = 0;
 
-        if (!candle) return null;
+    for (const { swing, timeMs } of preparedSwings) {
+      while (
+        candleIndex < preparedCandles.length - 1 &&
+        preparedCandles[candleIndex].timeMs < timeMs
+      ) {
+        candleIndex++;
+      }
 
-        return {
-          time: (new Date(swing.timestamp).getTime() / 1000) as Time,
-          position: swing.type === "high" ? ("aboveBar" as const) : ("belowBar" as const),
-          color: swing.type === "high" ? "#10b981" : "#ef4444",
-          shape: "circle" as const,
-          size: 1.5,
-          text: swing.type === "high" ? "SH" : "SL",
-        };
-      })
-      .filter((marker): marker is SeriesMarker<Time> => Boolean(marker))
-      .sort((a, b) => (a.time as number) - (b.time as number));
+      let closestIndex = candleIndex;
+      if (
+        candleIndex > 0 &&
+        Math.abs(preparedCandles[candleIndex - 1].timeMs - timeMs) <
+          Math.abs(preparedCandles[closestIndex].timeMs - timeMs)
+      ) {
+        closestIndex = candleIndex - 1;
+      }
+
+      const matched = preparedCandles[closestIndex];
+      if (!matched || Math.abs(matched.timeMs - timeMs) > MATCH_TOLERANCE_MS) {
+        continue;
+      }
+
+      markers.push({
+        time: (matched.timeMs / 1000) as Time,
+        position: swing.type === "high" ? "aboveBar" : "belowBar",
+        color: swing.type === "high" ? "#10b981" : "#ef4444",
+        shape: "circle",
+        size: 1.5,
+        text: swing.type === "high" ? "SH" : "SL",
+      });
+    }
 
     plugin.setMarkers(markers);
-  }, [chart, series, swings, candles]);
+  }, [chart, series, preparedSwings, preparedCandles]);
 
   return null;
 }
