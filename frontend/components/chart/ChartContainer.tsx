@@ -580,6 +580,25 @@ export function ChartContainer({
     const symbolChanged = prevFiltered.length > 0 && 
       (prevFiltered[0]?.symbol !== filteredCandles[0]?.symbol || 
        prevFiltered[0]?.timeframe !== filteredCandles[0]?.timeframe);
+    const shouldForceFit = isInitialLoad || symbolChanged;
+
+    const fitChartToContent = () => {
+      if (!chartRef.current?.timeScale) return;
+      try {
+        chartRef.current.timeScale().fitContent();
+      } catch (error) {
+        console.warn("ChartContainer: Error fitting content", error);
+      }
+    };
+
+    const resetPriceScale = () => {
+      try {
+        const priceScale = seriesRef.current?.priceScale();
+        priceScale?.setAutoScale(true);
+      } catch (error) {
+        console.warn("ChartContainer: Error resetting price scale", error);
+      }
+    };
 
     if (isInitialLoad || symbolChanged) {
       // Full data replacement for initial load or symbol/timeframe change
@@ -624,19 +643,21 @@ export function ChartContainer({
         }
       }
       
-      // Fit content only on initial load or symbol/timeframe change
-      try {
-        if (chartRef.current && chartData.length > 0) {
-          // Check if chart is still valid
-          if (!chartRef.current.timeScale) return;
-          const visibleRange = chartRef.current.timeScale().getVisibleRange();
-          if (!visibleRange) {
-            chartRef.current.timeScale().fitContent();
+      if (chartData.length > 0 && shouldForceFit) {
+        resetPriceScale();
+        fitChartToContent();
+      } else {
+        try {
+          if (chartRef.current && chartData.length > 0) {
+            if (!chartRef.current.timeScale) return;
+            const visibleRange = chartRef.current.timeScale().getVisibleRange();
+            if (!visibleRange) {
+              fitChartToContent();
+            }
           }
+        } catch (error) {
+          console.warn("ChartContainer: Chart is disposed", error);
         }
-      } catch (error) {
-        // Chart might be disposed, ignore
-        console.warn("ChartContainer: Chart is disposed", error);
       }
     } else {
       // Incremental updates - only update new/changed candles
@@ -700,6 +721,11 @@ export function ChartContainer({
         if (chartData.length > 0) {
           const oldest = Math.min(...chartData.map((d) => d.time as number));
           setOldestLoadedTime(oldest);
+        }
+
+        if (chartData.length > 0 && shouldForceFit) {
+          resetPriceScale();
+          fitChartToContent();
         }
       } else {
         // Update chart with new/changed candles using update() for efficiency
@@ -787,9 +813,14 @@ export function ChartContainer({
             return;
           }
           
-          if (chartData.length > 0) {
-            const oldest = Math.min(...chartData.map((d) => d.time as number));
-            setOldestLoadedTime(oldest);
+        if (chartData.length > 0) {
+          const oldest = Math.min(...chartData.map((d) => d.time as number));
+          setOldestLoadedTime(oldest);
+        }
+
+        if (chartData.length > 0 && shouldForceFit) {
+          resetPriceScale();
+          fitChartToContent();
           }
         }
 
