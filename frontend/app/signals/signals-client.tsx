@@ -96,47 +96,53 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
       return fixedOrder.filter(id => filteredSet.has(id));
     }
 
-    // Sort signals
+    // Multi-sort signals by: MAX(swing_high_timestamp, swing_low_timestamp), price_score, confluence
     const sorted = [...filtered].sort((aId, bId) => {
       const a = lookup[aId];
       const b = lookup[bId];
       if (!a || !b) return 0;
 
-      let aValue: number | string;
-      let bValue: number | string;
+      // Helper function to get max swing timestamp
+      const getMaxSwingTimestamp = (signal: typeof a): number => {
+        const highTs = signal.swing_high_timestamp ? new Date(signal.swing_high_timestamp).getTime() : 0;
+        const lowTs = signal.swing_low_timestamp ? new Date(signal.swing_low_timestamp).getTime() : 0;
+        return Math.max(highTs, lowTs);
+      };
 
-      switch (sortField) {
-        case "name":
-          aValue = a.symbol.toLowerCase();
-          bValue = b.symbol.toLowerCase();
-          break;
-        case "price": {
-          const aPrice = symbols.find((s) => s.symbol === a.symbol)?.price ?? a.price ?? 0;
-          const bPrice = symbols.find((s) => s.symbol === b.symbol)?.price ?? b.price ?? 0;
-          aValue = aPrice;
-          bValue = bPrice;
-          break;
-        }
-        case "score": {
-          const aEntryPrice = a.entry1 ?? a.price ?? 0;
-          const bEntryPrice = b.entry1 ?? b.price ?? 0;
-          const aCurrentPrice = symbols.find((s) => s.symbol === a.symbol)?.price ?? null;
-          const bCurrentPrice = symbols.find((s) => s.symbol === b.symbol)?.price ?? null;
-          aValue = calculatePriceScore(aCurrentPrice, aEntryPrice);
-          bValue = calculatePriceScore(bCurrentPrice, bEntryPrice);
-          break;
-        }
-        default:
-          return 0;
+      // Helper function to get price score
+      const getPriceScore = (signal: typeof a): number => {
+        const entryPrice = signal.entry1 ?? signal.price ?? 0;
+        const currentPrice = symbols.find((s) => s.symbol === signal.symbol)?.price ?? null;
+        return calculatePriceScore(currentPrice, entryPrice);
+      };
+
+      // Helper function to get confluence value
+      const getConfluenceValue = (signal: typeof a): number => {
+        if (!signal.confluence || typeof signal.confluence !== "string") return 0;
+        const value = parseInt(signal.confluence, 10);
+        return isNaN(value) ? 0 : value;
+      };
+
+      // Sort by: 1) Max swing timestamp (desc - most recent first), 2) Price score (asc - lower is better), 3) Confluence (desc - higher is better)
+      const aMaxSwing = getMaxSwingTimestamp(a);
+      const bMaxSwing = getMaxSwingTimestamp(b);
+      
+      // Primary sort: Max swing timestamp (descending - most recent first)
+      if (aMaxSwing !== bMaxSwing) {
+        return bMaxSwing - aMaxSwing; // Descending
       }
 
-      if (typeof aValue === "string" && typeof bValue === "string") {
-        const comparison = aValue.localeCompare(bValue);
-        return sortDirection === "asc" ? comparison : -comparison;
+      // Secondary sort: Price score (ascending - lower is better)
+      const aPriceScore = getPriceScore(a);
+      const bPriceScore = getPriceScore(b);
+      if (aPriceScore !== bPriceScore) {
+        return aPriceScore - bPriceScore; // Ascending
       }
 
-      const comparison = (aValue as number) - (bValue as number);
-      return sortDirection === "asc" ? comparison : -comparison;
+      // Tertiary sort: Confluence value (descending - higher is better)
+      const aConfluence = getConfluenceValue(a);
+      const bConfluence = getConfluenceValue(b);
+      return bConfluence - aConfluence; // Descending
     });
 
     return sorted;
@@ -163,51 +169,57 @@ export function SignalsClient({ initialSignals }: SignalsClientProps) {
       return true;
     });
 
-    // Sort signals
+    // Multi-sort signals by: MAX(swing_high_timestamp, swing_low_timestamp), price_score, confluence
     const sorted = [...filtered].sort((aId, bId) => {
       const a = lookup[aId];
       const b = lookup[bId];
       if (!a || !b) return 0;
 
-      let aValue: number | string;
-      let bValue: number | string;
+      // Helper function to get max swing timestamp
+      const getMaxSwingTimestamp = (signal: typeof a): number => {
+        const highTs = signal.swing_high_timestamp ? new Date(signal.swing_high_timestamp).getTime() : 0;
+        const lowTs = signal.swing_low_timestamp ? new Date(signal.swing_low_timestamp).getTime() : 0;
+        return Math.max(highTs, lowTs);
+      };
 
-      switch (sortField) {
-        case "name":
-          aValue = a.symbol.toLowerCase();
-          bValue = b.symbol.toLowerCase();
-          break;
-        case "price": {
-          const aPrice = symbols.find((s) => s.symbol === a.symbol)?.price ?? a.price ?? 0;
-          const bPrice = symbols.find((s) => s.symbol === b.symbol)?.price ?? b.price ?? 0;
-          aValue = aPrice;
-          bValue = bPrice;
-          break;
-        }
-        case "score": {
-          const aEntryPrice = a.entry1 ?? a.price ?? 0;
-          const bEntryPrice = b.entry1 ?? b.price ?? 0;
-          const aCurrentPrice = symbols.find((s) => s.symbol === a.symbol)?.price ?? null;
-          const bCurrentPrice = symbols.find((s) => s.symbol === b.symbol)?.price ?? null;
-          aValue = calculatePriceScore(aCurrentPrice, aEntryPrice);
-          bValue = calculatePriceScore(bCurrentPrice, bEntryPrice);
-          break;
-        }
-        default:
-          return 0;
+      // Helper function to get price score
+      const getPriceScore = (signal: typeof a): number => {
+        const entryPrice = signal.entry1 ?? signal.price ?? 0;
+        const currentPrice = symbols.find((s) => s.symbol === signal.symbol)?.price ?? null;
+        return calculatePriceScore(currentPrice, entryPrice);
+      };
+
+      // Helper function to get confluence value
+      const getConfluenceValue = (signal: typeof a): number => {
+        if (!signal.confluence || typeof signal.confluence !== "string") return 0;
+        const value = parseInt(signal.confluence, 10);
+        return isNaN(value) ? 0 : value;
+      };
+
+      // Sort by: 1) Max swing timestamp (desc - most recent first), 2) Price score (asc - lower is better), 3) Confluence (desc - higher is better)
+      const aMaxSwing = getMaxSwingTimestamp(a);
+      const bMaxSwing = getMaxSwingTimestamp(b);
+      
+      // Primary sort: Max swing timestamp (descending - most recent first)
+      if (aMaxSwing !== bMaxSwing) {
+        return bMaxSwing - aMaxSwing; // Descending
       }
 
-      if (typeof aValue === "string" && typeof bValue === "string") {
-        const comparison = aValue.localeCompare(bValue);
-        return sortDirection === "asc" ? comparison : -comparison;
+      // Secondary sort: Price score (ascending - lower is better)
+      const aPriceScore = getPriceScore(a);
+      const bPriceScore = getPriceScore(b);
+      if (aPriceScore !== bPriceScore) {
+        return aPriceScore - bPriceScore; // Ascending
       }
 
-      const comparison = (aValue as number) - (bValue as number);
-      return sortDirection === "asc" ? comparison : -comparison;
+      // Tertiary sort: Confluence value (descending - higher is better)
+      const aConfluence = getConfluenceValue(a);
+      const bConfluence = getConfluenceValue(b);
+      return bConfluence - aConfluence; // Descending
     });
 
     return sorted;
-  }, [signalIds, searchTerm, directionFilter, minPrice, maxPrice, sortField, sortDirection, symbols]);
+  }, [signalIds, searchTerm, directionFilter, minPrice, maxPrice, symbols]);
 
   // Handle fixed button toggle
   const handleFixedToggle = () => {
