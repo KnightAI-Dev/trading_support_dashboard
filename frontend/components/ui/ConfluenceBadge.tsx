@@ -69,7 +69,7 @@ export function ConfluenceBadges({ confluence, className, confluenceValue }: Con
     : "bg-gray-500/20 text-gray-400 border-gray-500/50";
 
   return (
-    <div className={cn("flex flex-wrap gap-1", className)}>
+    <div className={cn("flex flex-wrap gap-1 justify-center", className)}>
         <Badge
           variant="outline"
           className={cn(
