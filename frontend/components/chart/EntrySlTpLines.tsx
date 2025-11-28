@@ -15,6 +15,8 @@ interface EntrySlTpLinesProps {
   chart: IChartApi | null;
   series: ISeriesApi<"Candlestick"> | null;
   signal: TradingSignal;
+  selectedSymbol: string;
+  selectedTimeframe: string;
 }
 
 const COLORS = {
@@ -50,12 +52,12 @@ export function EntrySlTpLines({
   chart,
   series,
   signal,
+  selectedSymbol,
+  selectedTimeframe,
 }: EntrySlTpLinesProps) {
   const seriesRef = useRef<ISeriesApi<"Line">[]>([]);
 
   useEffect(() => {
-    if (!chart || !series || !signal) return;
-
     const cleanupSeries = () => {
       if (!chart?.removeSeries) {
         seriesRef.current = [];
@@ -71,6 +73,18 @@ export function EntrySlTpLines({
       });
       seriesRef.current = [];
     };
+
+    if (!chart || !series || !signal) {
+      cleanupSeries();
+      return;
+    }
+    if (
+      signal.symbol !== selectedSymbol ||
+      signal.timeframe !== selectedTimeframe
+    ) {
+      cleanupSeries();
+      return;
+    }
 
     try {
       if (!chart.timeScale) return cleanupSeries();
@@ -203,7 +217,7 @@ export function EntrySlTpLines({
     }
 
     return cleanupSeries;
-  }, [chart, series, signal]);
+  }, [chart, series, signal, selectedSymbol, selectedTimeframe]);
 
   return null;
 }

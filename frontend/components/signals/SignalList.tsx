@@ -61,7 +61,7 @@ const VirtualizedRowRenderer = (props: VirtualizedRowProps) => (
 
 function SignalTableHeader() {
   return (
-    <div className="grid grid-cols-[150px_100px_80px_100px_120px_100px_100px_100px_100px_100px_120px_120px_120px_100px] gap-4 items-center w-full border-b-2 border-border bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground uppercase sticky top-0 z-10">
+    <div className="grid grid-cols-[150px_100px_80px_100px_120px_100px_100px_100px_100px_100px_120px_120px_120px_150px_100px] gap-4 items-center w-full border-b-2 border-border bg-muted/30 px-4 py-2 text-xs font-semibold text-muted-foreground uppercase sticky top-0 z-10">
       <div>Symbol</div>
       <div>Direction</div>
       <div>Timeframe</div>
@@ -75,6 +75,7 @@ function SignalTableHeader() {
       <div className="text-right">Swing High</div>
       <div className="text-right">Swing Low</div>
       <div className="text-right">Updated</div>
+      <div>Confluence</div>
       <div className="text-right">Action</div>
     </div>
   );

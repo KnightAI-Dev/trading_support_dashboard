@@ -852,6 +852,8 @@ export function ChartContainer({
           chart={chartApi}
           series={priceSeries}
           signal={latestSignal}
+          selectedSymbol={selectedSymbol}
+          selectedTimeframe={selectedTimeframe}
         />
       )}
 

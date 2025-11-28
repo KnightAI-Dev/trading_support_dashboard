@@ -9,6 +9,7 @@ import { formatPrice, formatTimestamp, cn } from "@/lib/utils";
 import { TrendingDown, TrendingUp, ArrowRight } from "lucide-react";
 import type { SymbolItem } from "@/components/ui/SymbolManager";
 import { useMarketStore } from "@/stores/useMarketStore";
+import { ConfluenceBadges } from "@/components/ui/ConfluenceBadge";
 
 interface SignalRowProps {
   signal: TradingSignal;
@@ -78,7 +79,7 @@ export const SignalRow = memo(
     return (
       <div
         className={cn(
-          "grid grid-cols-[150px_100px_80px_100px_120px_100px_100px_100px_100px_120px_120px_120px_120px_100px] gap-4 items-center w-full",
+          "grid grid-cols-[150px_100px_80px_100px_120px_100px_100px_100px_100px_100px_120px_120px_120px_150px_100px] gap-4 items-center w-full",
           "border-b border-border/50 bg-card px-4 py-2.5"
         )}
       >
@@ -201,6 +202,15 @@ export const SignalRow = memo(
         {/* Timestamp */}
         <div className="text-right">
           <p className="text-xs text-muted-foreground/80">{lastUpdated}</p>
+        </div>
+
+        {/* Confluence */}
+        <div>
+          {signal.confluence ? (
+            <ConfluenceBadges confluence={signal.confluence} />
+          ) : (
+            <span className="text-muted-foreground/60 text-xs">-</span>
+          )}
         </div>
 
         {/* Action Button */}
